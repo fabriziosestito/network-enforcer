@@ -92,9 +92,13 @@ func resolveOutcome(role string, err error) processFlowResult {
 	return processFlowError(fmt.Errorf("cannot resolve %s workload: %w", role, err))
 }
 
-func bindResolveDenyingPolicy(
-	c client.Client,
-) func(context.Context, *securityv1alpha1.WorkloadRef, networkingv1.PolicyType) (k8stypes.NamespacedName, error) {
+type resolvePolicyFunc func(
+	context.Context,
+	*securityv1alpha1.WorkloadRef,
+	networkingv1.PolicyType,
+) (k8stypes.NamespacedName, error)
+
+func bindResolveDenyingPolicy(c client.Client) resolvePolicyFunc {
 	return func(
 		ctx context.Context,
 		ref *securityv1alpha1.WorkloadRef,
@@ -106,7 +110,7 @@ func bindResolveDenyingPolicy(
 
 func resolveViolationDenyingPolicy(
 	ctx context.Context,
-	resolvePolicy func(context.Context, *securityv1alpha1.WorkloadRef, networkingv1.PolicyType) (k8stypes.NamespacedName, error),
+	resolvePolicy resolvePolicyFunc,
 	observation *violation.Observation,
 ) error {
 	if observation.DenyingPolicyName != "" {
@@ -133,7 +137,7 @@ func resolveViolationDenyingPolicy(
 func resolveParsedFlow(
 	ctx context.Context,
 	resolveWorkload func(context.Context, *securityv1alpha1.WorkloadRef) error,
-	resolvePolicy func(context.Context, *securityv1alpha1.WorkloadRef, networkingv1.PolicyType) (k8stypes.NamespacedName, error),
+	resolvePolicy resolvePolicyFunc,
 	parsed processFlowResult,
 ) processFlowResult {
 	var source *securityv1alpha1.WorkloadRef
