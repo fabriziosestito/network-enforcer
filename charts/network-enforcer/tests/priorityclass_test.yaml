@@ -31,6 +31,14 @@ tests:
       - hasDocuments:
           count: 0
 
+  - it: "should not render PriorityClass when name is empty"
+    set:
+      priorityClass:
+        name: ""
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: "should allow name and value override"
     set:
       priorityClass:
