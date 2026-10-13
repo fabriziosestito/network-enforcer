@@ -365,7 +365,11 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 						Backend: securityv1alpha1.PolicyBackendKubernetes,
 						Kubernetes: &networkingv1.NetworkPolicySpec{
 							PodSelector: sourceSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},
 			},
@@ -376,7 +380,41 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 						Backend: securityv1alpha1.PolicyBackendKubernetes,
 						Kubernetes: &networkingv1.NetworkPolicySpec{
 							PodSelector: dstSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeIngress,
+					},
+				},
+			},
+			&securityv1alpha1.WorkloadNetworkPolicy{
+				Name: "source-ingress", Namespace: defaultCiliumTestNamespace,
+				Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+					PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+						Backend: securityv1alpha1.PolicyBackendKubernetes,
+						Kubernetes: &networkingv1.NetworkPolicySpec{
+							PodSelector: sourceSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeIngress,
+					},
+				},
+			},
+			&securityv1alpha1.WorkloadNetworkPolicy{
+				Name: "dest-egress", Namespace: defaultCiliumTestNamespace,
+				Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+					PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+						Backend: securityv1alpha1.PolicyBackendKubernetes,
+						Kubernetes: &networkingv1.NetworkPolicySpec{
+							PodSelector: dstSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},
 			},

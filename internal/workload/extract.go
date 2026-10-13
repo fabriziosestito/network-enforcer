@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -139,6 +140,7 @@ func ResolveDenyingPolicy(
 	ctx context.Context,
 	c client.Client,
 	wk *securityv1alpha1.WorkloadRef,
+	direction networkingv1.PolicyType,
 ) (types.NamespacedName, error) {
 	namespace := wk.Namespace
 
@@ -153,6 +155,9 @@ func ResolveDenyingPolicy(
 	var matches []string
 	for i := range wnpList.Items {
 		wnp := &wnpList.Items[i]
+		if wnp.Spec.Direction != direction {
+			continue
+		}
 		wnpSelector, err := wnp.Spec.GetSelector()
 		if err != nil {
 			return types.NamespacedName{}, fmt.Errorf(
