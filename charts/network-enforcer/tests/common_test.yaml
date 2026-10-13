@@ -330,3 +330,33 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: custom-fullname-controller-manager
+
+  - it: "should render default priority class name on controller, otel-collector and fluent-bit"
+    templates:
+      - templates/controller/deployment.yaml
+      - templates/otel-collector/deployment.yaml
+      - templates/istio-fluent-bit/daemonset.yaml
+    set:
+      controller:
+        provider:
+          name: istio
+    asserts:
+      - equal:
+          path: "spec.template.spec.priorityClassName"
+          value: "network-enforcer-priorityclass"
+
+  - it: "should not render priorityClassName when priorityClass.name is empty"
+    templates:
+      - templates/controller/deployment.yaml
+      - templates/otel-collector/deployment.yaml
+      - templates/istio-fluent-bit/daemonset.yaml
+    set:
+      controller:
+        provider:
+          name: istio
+      priorityClass:
+        name: ""
+    asserts:
+      - notExists:
+          path: "spec.template.spec.priorityClassName"
+

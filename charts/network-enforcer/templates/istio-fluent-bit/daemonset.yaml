@@ -20,6 +20,9 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/istio-fluent-bit/configmap.yaml") . | sha256sum }}
     spec:
+      {{- if .Values.priorityClass.name }}
+      priorityClassName: {{ .Values.priorityClass.name }}
+      {{- end }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
       {{- include "network-enforcer.imagePullSecrets" .Values.imagePullSecrets | nindent 8 }}

@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: {{ include "network-enforcer.fullname" . }}-otel-collector
         app.kubernetes.io/component: otel-collector
     spec:
+      {{- if .Values.priorityClass.name }}
+      priorityClassName: {{ .Values.priorityClass.name }}
+      {{- end }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
       {{- include "network-enforcer.imagePullSecrets" .Values.imagePullSecrets | nindent 8 }}

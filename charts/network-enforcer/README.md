@@ -93,9 +93,10 @@ The top-level keys of
 
 | Key                   | Description                                                                                |
 | --------------------- | ------------------------------------------------------------------------------------------ |
-| `controller`          | The controller Deployment: image, resources, security context, scheduling, log level.      |
+| `controller`          | The controller Deployment: image, resources, security context, scheduling, log level, PodDisruptionBudget. |
 | `controller.provider` | The data-plane provider (`istio`, `cilium`, `calico`), and per-provider endpoint/TLS settings. |
 | `telemetry`           | The OTEL collector strategy: `none`, `default` (bundled collector), or `external`.         |
+| `priorityClass`       | The PriorityClass shared by the controller, fluent-bit and otel-collector pods.             |
 | `imagePullSecrets`    | Secrets with private registry credentials.                                                 |
 | `nameOverride`        | Replaces the chart name in the generated resource names.                                   |
 | `fullnameOverride`    | Replaces the whole `<release>-<chart>` prefix in the generated resource names.             |

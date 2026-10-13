@@ -70,6 +70,18 @@
                     "type": "object",
                     "additionalProperties": true
                 },
+                "pdb": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        },
+                        "minAvailable": {
+                            "type": "integer"
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "podAnnotations": {
                     "type": "object",
                     "additionalProperties": true
@@ -355,6 +367,27 @@
         },
         "nameOverride": {
             "type": "string"
+        },
+        "priorityClass": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "globalDefault": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "integer"
+                }
+            },
+            "additionalProperties": false
         },
         "telemetry": {
             "type": "object",
