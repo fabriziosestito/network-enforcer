@@ -95,7 +95,7 @@ The top-level keys of
 | --------------------- | ------------------------------------------------------------------------------------------ |
 | `controller`          | The controller Deployment: image, resources, security context, scheduling, log level.      |
 | `controller.provider` | The data-plane provider (`istio`, `cilium`, `calico`), and per-provider endpoint/TLS settings. |
-| `telemetry`           | The OTEL collector strategy: `none`, `default` (bundled collector), or `external`.         |
+| `telemetry`           | The OTEL collector strategy: `none`, `default` (bundled collector), or `external`. The bundled collector also has `resources`, `tolerations`, `nodeSelector`, and `affinity` keys. |
 | `imagePullSecrets`    | Secrets with private registry credentials.                                                 |
 | `nameOverride`        | Replaces the chart name in the generated resource names.                                   |
 | `fullnameOverride`    | Replaces the whole `<release>-<chart>` prefix in the generated resource names.             |
@@ -116,6 +116,28 @@ applied; values under inactive providers are ignored.
 Calico does not support `insecure`: Goldmane requires mTLS. Cilium `insecure` is
 plaintext to Relay port 80: set `tls.mode=insecure` and clear `tls.serverName`.
 If `endpoint` is still the default `:443`, the chart rewrites it to `:80`.
+
+### Scheduling
+
+`controller`, `controller.provider.istio.fluentBit`, and `telemetry.defaultCollector`
+each have their own `resources`, `tolerations`, `nodeSelector`, and `affinity` keys.
+
+The `istio-fluent-bit` DaemonSet must run on every node that runs the Istio
+ambient `ztunnel` DaemonSet. This includes nodes with taints, for example
+control-plane nodes. The DaemonSet reads `ztunnel` logs from the node's
+filesystem. It needs a pod on each node where `ztunnel` runs.
+
+`ztunnel` tolerates all taints by default.
+`controller.provider.istio.fluentBit.tolerations` uses the same default
+(`- operator: Exists`). If you set this value to `[]`, fluent-bit no longer
+tolerates any taint. The fluent-bit pod is then missing from each tainted
+node that `ztunnel` still runs on. The chart does not collect logs from
+`ztunnel` on those nodes.
+
+The `controller` Deployment and the `telemetry.defaultCollector` Deployment
+have no tolerations by default. Set `controller.tolerations` or
+`telemetry.defaultCollector.tolerations` to schedule these Deployments onto
+tainted nodes.
 
 Override examples:
 
