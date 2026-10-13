@@ -291,7 +291,11 @@ func TestResolveDenyingPolicy(t *testing.T) {
 
 			scheme := runtime.NewScheme()
 			require.NoError(t, securityv1alpha1.AddToScheme(scheme))
-			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.objs...).Build()
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			for _, obj := range tc.objs {
+				builder.WithRuntimeObjects(obj.DeepCopyObject())
+			}
+			cl := builder.Build()
 
 			got, err := ResolveDenyingPolicy(t.Context(), cl, wk, tc.direction)
 			if tc.wantErr != "" {
