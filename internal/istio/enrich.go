@@ -15,6 +15,7 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -142,6 +143,9 @@ func (e *Enricher) resolveOwningPolicy(
 	var matches []string
 	for i := range wnpList.Items {
 		wnp := &wnpList.Items[i]
+		if wnp.Spec.Direction != networkingv1.PolicyTypeIngress {
+			continue
+		}
 		selector, ok := wnpIstioSelector(wnp)
 		if !ok {
 			continue

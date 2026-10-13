@@ -404,8 +404,14 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 				Name: sourcePolicyName, Namespace: defaultCalicoTestNamespace,
 				Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
 					PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
-						Backend:    securityv1alpha1.PolicyBackendKubernetes,
-						Kubernetes: &networkingv1.NetworkPolicySpec{PodSelector: sourceSelector},
+						Backend: securityv1alpha1.PolicyBackendKubernetes,
+						Kubernetes: &networkingv1.NetworkPolicySpec{
+							PodSelector: sourceSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},
 			},
@@ -413,8 +419,44 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 				Name: dstPolicyName, Namespace: defaultCalicoTestNamespace,
 				Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
 					PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
-						Backend:    securityv1alpha1.PolicyBackendKubernetes,
-						Kubernetes: &networkingv1.NetworkPolicySpec{PodSelector: dstSelector},
+						Backend: securityv1alpha1.PolicyBackendKubernetes,
+						Kubernetes: &networkingv1.NetworkPolicySpec{
+							PodSelector: dstSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeIngress,
+					},
+				},
+			},
+			&securityv1alpha1.WorkloadNetworkPolicy{
+				Name: "client-ingress", Namespace: defaultCalicoTestNamespace,
+				Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+					PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+						Backend: securityv1alpha1.PolicyBackendKubernetes,
+						Kubernetes: &networkingv1.NetworkPolicySpec{
+							PodSelector: sourceSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeIngress,
+					},
+				},
+			},
+			&securityv1alpha1.WorkloadNetworkPolicy{
+				Name: "server-egress", Namespace: defaultCalicoTestNamespace,
+				Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+					PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+						Backend: securityv1alpha1.PolicyBackendKubernetes,
+						Kubernetes: &networkingv1.NetworkPolicySpec{
+							PodSelector: dstSelector,
+							PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+						},
+					},
+					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},
 			},

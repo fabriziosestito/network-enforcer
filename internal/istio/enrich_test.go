@@ -128,6 +128,9 @@ func istioWNP(namespace, name string, matchLabels map[string]string) *securityv1
 					Selector: metav1.LabelSelector{MatchLabels: matchLabels},
 				},
 			},
+			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+				Direction: networkingv1.PolicyTypeIngress,
+			},
 		},
 	}
 }
@@ -144,6 +147,9 @@ func kubernetesWNP(namespace, name string, matchLabels map[string]string) *secur
 				Kubernetes: &networkingv1.NetworkPolicySpec{
 					PodSelector: metav1.LabelSelector{MatchLabels: matchLabels},
 				},
+			},
+			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+				Direction: networkingv1.PolicyTypeIngress,
 			},
 		},
 	}
@@ -267,6 +273,10 @@ func TestResolveOwningPolicy(t *testing.T) {
 	// pod is the ALLOW-miss destination whose labels are matched against WNP
 	// selectors. It carries app=frontend.
 	pod := destPod("frontend", "ns-dst", "frontend-sa", map[string]string{"app": "frontend"})
+	egress := istioWNP("ns-dst", "aaa-egress", map[string]string{"app": "frontend"})
+	egress.Spec.Direction = networkingv1.PolicyTypeEgress
+	noDirection := istioWNP("ns-dst", "no-direction", map[string]string{"app": "frontend"})
+	noDirection.Spec.Direction = ""
 
 	cases := []struct {
 		name string
@@ -296,6 +306,25 @@ func TestResolveOwningPolicy(t *testing.T) {
 			objs: []client.Object{
 				kubernetesWNP("ns-dst", "k8s-wnp", map[string]string{"app": "frontend"}),
 			},
+			wantErr: true,
+		},
+		{
+			name: "ingress ignores egress with identical selector even when egress sorts first",
+			objs: []client.Object{
+				egress,
+				istioWNP("ns-dst", "zzz-ingress", map[string]string{"app": "frontend"}),
+			},
+			wantNS:   "ns-dst",
+			wantName: "zzz-ingress",
+		},
+		{
+			name:    "egress-only policy cannot own an inbound violation",
+			objs:    []client.Object{egress},
+			wantErr: true,
+		},
+		{
+			name:    "policy without direction is ignored",
+			objs:    []client.Object{noDirection},
 			wantErr: true,
 		},
 		{
@@ -352,6 +381,9 @@ func TestResolveOwningPolicy(t *testing.T) {
 func TestEnrich(t *testing.T) {
 	t.Parallel()
 
+	egress := istioWNP("ns-app", "aaa-egress", map[string]string{"app": "server"})
+	egress.Spec.Direction = networkingv1.PolicyTypeEgress
+
 	cases := []struct {
 		name string
 		objs []client.Object
@@ -375,6 +407,7 @@ func TestEnrich(t *testing.T) {
 				deploymentPod("client", "ns-src", "10.244.0.2", "client-sa"),
 				destPod("server", "ns-app", "server-sa", map[string]string{"app": "server"}),
 				istioWNP("ns-app", "user-named-wnp", map[string]string{"app": "server"}),
+				egress,
 			},
 			obs: violation.Observation{
 				ViolationInfo: securityv1alpha1.ViolationInfo{

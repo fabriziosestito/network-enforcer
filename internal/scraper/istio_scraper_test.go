@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -338,6 +339,9 @@ func TestExportEnrichesObservations(t *testing.T) {
 				Istio: &securityv1alpha1.IstioAuthorizationPolicySpec{
 					Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "http-server"}},
 				},
+			},
+			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+				Direction: networkingv1.PolicyTypeIngress,
 			},
 		},
 	}

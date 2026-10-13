@@ -7,10 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
@@ -181,4 +183,128 @@ func TestWorkloadKeyFromPod(t *testing.T) {
 
 	_, err = Get(context.Background(), cl, types.NamespacedName{Namespace: testNamespace, Name: "missing"})
 	require.True(t, apierrors.IsNotFound(err))
+}
+
+func TestResolveDenyingPolicy(t *testing.T) {
+	t.Parallel()
+
+	selector := metav1.LabelSelector{MatchLabels: map[string]string{"app": "frontend"}}
+	wk := &securityv1alpha1.WorkloadRef{
+		Namespace: testNamespace,
+		OwnerKind: securityv1alpha1.WorkloadKindDeployment,
+		OwnerName: "frontend",
+		Selector:  selector,
+	}
+	newPolicy := func(name string, direction networkingv1.PolicyType) *securityv1alpha1.WorkloadNetworkPolicy {
+		return &securityv1alpha1.WorkloadNetworkPolicy{
+			Name: name, Namespace: testNamespace,
+			Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+				WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+					TargetRef: securityv1alpha1.WorkloadTargetRef{Kind: wk.OwnerKind, Name: wk.OwnerName},
+					Direction: direction,
+				},
+				PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+					Backend: securityv1alpha1.PolicyBackendKubernetes,
+					Kubernetes: &networkingv1.NetworkPolicySpec{
+						PodSelector: selector,
+						PolicyTypes: []networkingv1.PolicyType{direction},
+					},
+				},
+			},
+		}
+	}
+	ingress := newPolicy("incoming", networkingv1.PolicyTypeIngress)
+	egress := newPolicy("outgoing", networkingv1.PolicyTypeEgress)
+	otherNamespace := ingress.DeepCopy()
+	otherNamespace.Namespace = "other"
+	otherSelector := newPolicy("other-workload", networkingv1.PolicyTypeIngress)
+	otherSelector.Spec.Kubernetes.PodSelector = metav1.LabelSelector{MatchLabels: map[string]string{"app": "other"}}
+	invalidEgress := newPolicy("invalid-egress", networkingv1.PolicyTypeEgress)
+	invalidEgress.Spec.Kubernetes = nil
+
+	cases := []struct {
+		name      string
+		direction networkingv1.PolicyType
+		objs      []client.Object
+		wantName  string
+		wantErr   string
+	}{
+		{
+			name:      "ingress ignores egress with identical selector",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{ingress, egress},
+			wantName:  ingress.Name,
+		},
+		{
+			name:      "egress ignores ingress with identical selector",
+			direction: networkingv1.PolicyTypeEgress,
+			objs:      []client.Object{ingress, egress},
+			wantName:  egress.Name,
+		},
+		{
+			name:      "ingress cannot match egress-only policy",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{egress},
+			wantErr:   "no WorkloadNetworkPolicy selects",
+		},
+		{
+			name:      "egress cannot match ingress-only policy",
+			direction: networkingv1.PolicyTypeEgress,
+			objs:      []client.Object{ingress},
+			wantErr:   "no WorkloadNetworkPolicy selects",
+		},
+		{
+			name:      "policy without direction is ignored",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{newPolicy("no-direction", "")},
+			wantErr:   "no WorkloadNetworkPolicy selects",
+		},
+		{
+			name:      "same-direction ambiguity remains an error",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{ingress, newPolicy("duplicate", networkingv1.PolicyTypeIngress), egress},
+			wantErr:   "multiple WorkloadNetworkPolicies select",
+		},
+		{
+			name:      "other namespace and selector are ignored",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{ingress, otherNamespace, otherSelector},
+			wantName:  ingress.Name,
+		},
+		{
+			name:      "opposite direction is skipped before reading its selector",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{ingress, invalidEgress},
+			wantName:  ingress.Name,
+		},
+		{
+			name:      "no matching selector",
+			direction: networkingv1.PolicyTypeIngress,
+			objs:      []client.Object{otherSelector},
+			wantErr:   "no WorkloadNetworkPolicy selects",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, securityv1alpha1.AddToScheme(scheme))
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			for _, obj := range tc.objs {
+				builder.WithRuntimeObjects(obj.DeepCopyObject())
+			}
+			cl := builder.Build()
+
+			got, err := ResolveDenyingPolicy(t.Context(), cl, wk, tc.direction)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				require.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, types.NamespacedName{Namespace: testNamespace, Name: tc.wantName}, got)
+		})
+	}
 }
