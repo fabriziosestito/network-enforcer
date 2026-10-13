@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        This issue tracks the release of a new version of Network Enforcer. 
+        This issue tracks the release of a new version of Network Enforcer.
 
   - type: textarea
     attributes:
@@ -26,6 +26,9 @@ body:
           - [ ] Check if app version and chart version are correctly bumped.
           - [ ] Check if CI for the Helm chart PR is green. If so, merge it.
         - [ ] Verify that helm release is correctly created and new version in helm repo is accessible.
+        - [ ] Check if updatecli opens a PR updating the documentation on [kubewarden/docs](https://github.com/kubewarden/docs) repository
+          - [ ] The just released version is considered "stable" by the docs. It's the default one shown for the component.
+          - [ ] The next `-dev` version is created
 
         ## FAQ
         ### What if we want to bump the helm chart to more than just a patch release?
