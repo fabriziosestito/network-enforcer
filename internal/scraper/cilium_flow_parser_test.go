@@ -22,6 +22,7 @@ import (
 	"github.com/kubewarden/network-enforcer/internal/testutil"
 	"github.com/kubewarden/network-enforcer/internal/types"
 	"github.com/kubewarden/network-enforcer/internal/violation"
+	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
 const defaultCiliumTestNamespace = "default"
@@ -325,6 +326,7 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 	controller := true
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithObjects(
 			&appsv1.Deployment{
 				Name: "source-deploy", Namespace: defaultCiliumTestNamespace,
@@ -369,6 +371,7 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("source-deploy"),
 						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},
@@ -384,6 +387,7 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("dest-deploy"),
 						Direction: networkingv1.PolicyTypeIngress,
 					},
 				},
@@ -399,6 +403,7 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("source-deploy"),
 						Direction: networkingv1.PolicyTypeIngress,
 					},
 				},
@@ -414,6 +419,7 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("dest-deploy"),
 						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},

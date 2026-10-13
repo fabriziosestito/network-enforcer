@@ -217,8 +217,8 @@ func TestResolveDenyingPolicy(t *testing.T) {
 	egress := newPolicy("outgoing", networkingv1.PolicyTypeEgress)
 	otherNamespace := ingress.DeepCopy()
 	otherNamespace.Namespace = "other"
-	otherSelector := newPolicy("other-workload", networkingv1.PolicyTypeIngress)
-	otherSelector.Spec.Kubernetes.PodSelector = metav1.LabelSelector{MatchLabels: map[string]string{"app": "other"}}
+	otherTarget := newPolicy("other-workload", networkingv1.PolicyTypeIngress)
+	otherTarget.Spec.TargetRef.Name = "other"
 	invalidEgress := newPolicy("invalid-egress", networkingv1.PolicyTypeEgress)
 	invalidEgress.Spec.Kubernetes = nil
 
@@ -227,7 +227,7 @@ func TestResolveDenyingPolicy(t *testing.T) {
 		direction networkingv1.PolicyType
 		objs      []client.Object
 		wantName  string
-		wantErr   string
+		wantErr   error
 	}{
 		{
 			name:      "ingress ignores egress with identical selector",
@@ -245,43 +245,43 @@ func TestResolveDenyingPolicy(t *testing.T) {
 			name:      "ingress cannot match egress-only policy",
 			direction: networkingv1.PolicyTypeIngress,
 			objs:      []client.Object{egress},
-			wantErr:   "no WorkloadNetworkPolicy selects",
+			wantErr:   ErrTargetNotFound,
 		},
 		{
 			name:      "egress cannot match ingress-only policy",
 			direction: networkingv1.PolicyTypeEgress,
 			objs:      []client.Object{ingress},
-			wantErr:   "no WorkloadNetworkPolicy selects",
+			wantErr:   ErrTargetNotFound,
 		},
 		{
 			name:      "policy without direction is ignored",
 			direction: networkingv1.PolicyTypeIngress,
 			objs:      []client.Object{newPolicy("no-direction", "")},
-			wantErr:   "no WorkloadNetworkPolicy selects",
+			wantErr:   ErrTargetNotFound,
 		},
 		{
-			name:      "same-direction ambiguity remains an error",
+			name:      "same-direction duplicate is an error",
 			direction: networkingv1.PolicyTypeIngress,
 			objs:      []client.Object{ingress, newPolicy("duplicate", networkingv1.PolicyTypeIngress), egress},
-			wantErr:   "multiple WorkloadNetworkPolicies select",
+			wantErr:   ErrDuplicateTarget,
 		},
 		{
-			name:      "other namespace and selector are ignored",
+			name:      "other namespace and other target are ignored",
 			direction: networkingv1.PolicyTypeIngress,
-			objs:      []client.Object{ingress, otherNamespace, otherSelector},
+			objs:      []client.Object{ingress, otherNamespace, otherTarget},
 			wantName:  ingress.Name,
 		},
 		{
-			name:      "opposite direction is skipped before reading its selector",
+			name:      "opposite direction with an invalid spec is ignored",
 			direction: networkingv1.PolicyTypeIngress,
 			objs:      []client.Object{ingress, invalidEgress},
 			wantName:  ingress.Name,
 		},
 		{
-			name:      "no matching selector",
+			name:      "no WNP targets the workload",
 			direction: networkingv1.PolicyTypeIngress,
-			objs:      []client.Object{otherSelector},
-			wantErr:   "no WorkloadNetworkPolicy selects",
+			objs:      []client.Object{otherTarget},
+			wantErr:   ErrTargetNotFound,
 		},
 	}
 
@@ -291,15 +291,17 @@ func TestResolveDenyingPolicy(t *testing.T) {
 
 			scheme := runtime.NewScheme()
 			require.NoError(t, securityv1alpha1.AddToScheme(scheme))
-			builder := fake.NewClientBuilder().WithScheme(scheme)
+			builder := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, WNPTargetIndexField, IndexWNPByTarget)
 			for _, obj := range tc.objs {
 				builder.WithRuntimeObjects(obj.DeepCopyObject())
 			}
 			cl := builder.Build()
 
 			got, err := ResolveDenyingPolicy(t.Context(), cl, wk, tc.direction)
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
 				require.Empty(t, got)
 				return
 			}

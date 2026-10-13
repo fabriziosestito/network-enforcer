@@ -350,6 +350,11 @@ func run(logger *slog.Logger, conf *config) error {
 		return fmt.Errorf("unable to set up pod IP indexer: %w", err)
 	}
 
+	// Violations are correlated to their WNP by (targetRef, direction).
+	if err = controller.SetupWNPIndexer(ctx, mgr); err != nil {
+		return fmt.Errorf("unable to set up WorkloadNetworkPolicy target indexer: %w", err)
+	}
+
 	var eventLogger otellog.Logger
 	if conf.otel.Endpoint != "" {
 		otelCfg := events.OTELConfig{

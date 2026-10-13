@@ -12,12 +12,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -36,8 +33,8 @@ type Enricher struct {
 }
 
 // NewEnricher returns an Enricher backed by the given client. The client must
-// read from a cache that has the PodIPIndexField index registered (see
-// controller.SetupPodIPIndexer).
+// read from a cache that has the PodIPIndexField and workload.WNPTargetIndexField
+// indexes registered (see controller.SetupPodIPIndexer and controller.SetupWNPIndexer).
 func NewEnricher(c client.Client) *Enricher {
 	return &Enricher{client: c}
 }
@@ -72,11 +69,11 @@ func (e *Enricher) Enrich(
 
 		// A WNP violation is always an ALLOW-miss: the event carries no denying
 		// policy, so the owning WNP is not knowable from it. Resolve it by matching
-		// the destination pod's labels against WNP selectors and record it in the
+		// the destination workload's (targetRef, Ingress) and record it in the
 		// DenyingPolicy fields, which for an ALLOW-miss carry the *owning*
-		// (selector-matched) WNP rather than a policy that literally denied the
-		// flow. The controller then correlates by name.
-		if owner, ownerErr := e.resolveOwningPolicy(ctx, logger, dstPod); ownerErr != nil {
+		// WNP rather than a policy that literally denied the flow.
+		// The controller then correlates by name.
+		if owner, ownerErr := e.resolveOwningPolicy(ctx, &obs.Dest); ownerErr != nil {
 			logger.ErrorContext(ctx,
 				"Failed to resolve owning WorkloadNetworkPolicy for ALLOW-miss correlation",
 				"error", ownerErr)
@@ -115,96 +112,22 @@ func (e *Enricher) resolveDestWorkload(
 }
 
 // resolveOwningPolicy finds the WorkloadNetworkPolicy that owns the destination
-// pod of an ALLOW-miss violation by matching the pod's labels against each WNP's
-// selector. Reconstructing the WNP name is not possible because users may name
-// their WNPs freely, so we search instead.
+// workload of an ALLOW-miss violation through the (targetRef, direction) index.
+// ztunnel enforces inbound only, so the direction is always Ingress.
 //
-// It returns the owning policy as a types.NamespacedName. A non-nil error means
-// the owning policy could not be resolved: the WNP list could not be retrieved,
-// or no WNP selects the pod. The caller logs it and leaves the owning policy
-// unresolved.
+// A non-nil error means the owning policy could not be resolved: the lookup
+// failed, or no WNP or more than one targets the workload. The caller logs it
+// and leaves the owning policy unresolved.
 func (e *Enricher) resolveOwningPolicy(
 	ctx context.Context,
-	logger *slog.Logger,
-	pod *corev1.Pod,
+	dest *securityv1alpha1.WorkloadRef,
 ) (types.NamespacedName, error) {
-	namespace := pod.Namespace
-
-	var wnpList securityv1alpha1.WorkloadNetworkPolicyList
-	if err := e.client.List(ctx, &wnpList, client.InNamespace(namespace)); err != nil {
-		return types.NamespacedName{}, fmt.Errorf("listing WorkloadNetworkPolicies in namespace %s: %w", namespace, err)
+	wnp, err := workload.LookupWNPByTarget(
+		ctx, e.client, dest.Namespace, dest.OwnerKind, dest.OwnerName, networkingv1.PolicyTypeIngress)
+	if err != nil {
+		return types.NamespacedName{}, err
 	}
-
-	podLabels := labels.Set(pod.Labels)
-
-	// Collect every WNP whose selector matches, then pick deterministically. A
-	// WNP is 1:1 with a workload (RFC 0003), so a single match is expected; more
-	// than one means overlapping selectors.
-	var matches []string
-	for i := range wnpList.Items {
-		wnp := &wnpList.Items[i]
-		if wnp.Spec.Direction != networkingv1.PolicyTypeIngress {
-			continue
-		}
-		selector, ok := wnpIstioSelector(wnp)
-		if !ok {
-			continue
-		}
-		sel, err := metav1.LabelSelectorAsSelector(selector)
-		if err != nil {
-			// A malformed selector cannot match; skip this WNP and keep searching the
-			// rest rather than failing the whole correlation. The selector is a
-			// user-authored CRD field, so surface the bad one instead of silently
-			// dropping it.
-			logger.ErrorContext(ctx, "Invalid selector on WorkloadNetworkPolicy",
-				"policy", wnp.Name, "error", err)
-			continue
-		}
-		if sel.Empty() {
-			// An empty selector matches every pod. Treating it as a match would
-			// let a mis-configured WNP capture ALLOW-miss violations for unrelated
-			// workloads in the namespace, so skip it and never correlate by it.
-			logger.WarnContext(ctx, "Skipping WorkloadNetworkPolicy with empty selector",
-				"policy", wnp.Name)
-			continue
-		}
-		if sel.Matches(podLabels) {
-			matches = append(matches, wnp.Name)
-		}
-	}
-
-	switch len(matches) {
-	case 0:
-		return types.NamespacedName{}, fmt.Errorf(
-			"no WorkloadNetworkPolicy selects the ALLOW-miss violation destination pod '%s/%s'",
-			namespace,
-			pod.Name,
-		)
-	case 1:
-		return types.NamespacedName{Namespace: namespace, Name: matches[0]}, nil
-	default:
-		// Overlapping selectors matched more than one WNP; pick the first by name so
-		// the choice is deterministic across events.
-		sort.Strings(matches)
-		logger.WarnContext(
-			ctx,
-			"Multiple WorkloadNetworkPolicies select the ALLOW-miss violation destination pod; using the first",
-			"namespace", namespace,
-			"pod", pod.Name,
-			"selected", matches[0],
-		)
-		return types.NamespacedName{Namespace: namespace, Name: matches[0]}, nil
-	}
-}
-
-// wnpIstioSelector returns the Istio workload selector for a WorkloadNetworkPolicy
-// and whether it has one. This path only correlates Istio-enforced violations, so
-// a WNP on any other backend reports no selector and is skipped.
-func wnpIstioSelector(wnp *securityv1alpha1.WorkloadNetworkPolicy) (*metav1.LabelSelector, bool) {
-	if wnp.Spec.Backend == securityv1alpha1.PolicyBackendIstio && wnp.Spec.Istio != nil {
-		return &wnp.Spec.Istio.Selector, true
-	}
-	return nil, false
+	return wnp.NamespacedName(), nil
 }
 
 // peerIPFromAddr extracts the host from an Istio peer `ip:port` address. Istio
