@@ -261,7 +261,7 @@ func (s *CiliumScraper) processFlow(
 		return resolveParsedFlow(
 			ctx,
 			s.resolve,
-			bindResolveDenyingPolicy(s.Client),
+			s.Client,
 			parseCiliumFlowResponse(flowResponse),
 		)
 	case *hubbleObserver.GetFlowsResponse_LostEvents:

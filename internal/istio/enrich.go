@@ -72,8 +72,9 @@ func (e *Enricher) Enrich(
 		// the destination workload's (targetRef, Ingress) and record it in the
 		// DenyingPolicy fields, which for an ALLOW-miss carry the *owning*
 		// WNP rather than a policy that literally denied the flow.
-		// The controller then correlates by name.
-		if owner, ownerErr := e.resolveOwningPolicy(ctx, &obs.Dest); ownerErr != nil {
+		// The controller then correlates by name. ztunnel enforces inbound only.
+		owner, ownerErr := workload.ResolveDenyingPolicy(ctx, e.client, &obs.Dest, networkingv1.PolicyTypeIngress)
+		if ownerErr != nil {
 			logger.ErrorContext(ctx,
 				"Failed to resolve owning WorkloadNetworkPolicy for ALLOW-miss correlation",
 				"error", ownerErr)
@@ -109,25 +110,6 @@ func (e *Enricher) resolveDestWorkload(
 	}
 
 	return &pod, nil
-}
-
-// resolveOwningPolicy finds the WorkloadNetworkPolicy that owns the destination
-// workload of an ALLOW-miss violation through the (targetRef, direction) index.
-// ztunnel enforces inbound only, so the direction is always Ingress.
-//
-// A non-nil error means the owning policy could not be resolved: the lookup
-// failed, or no WNP or more than one targets the workload. The caller logs it
-// and leaves the owning policy unresolved.
-func (e *Enricher) resolveOwningPolicy(
-	ctx context.Context,
-	dest *securityv1alpha1.WorkloadRef,
-) (types.NamespacedName, error) {
-	wnp, err := workload.LookupWNPByTarget(
-		ctx, e.client, dest.Namespace, dest.OwnerKind, dest.OwnerName, networkingv1.PolicyTypeIngress)
-	if err != nil {
-		return types.NamespacedName{}, err
-	}
-	return wnp.NamespacedName(), nil
 }
 
 // peerIPFromAddr extracts the host from an Istio peer `ip:port` address. Istio

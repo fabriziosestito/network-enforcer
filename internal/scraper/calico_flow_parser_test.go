@@ -612,7 +612,7 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 			result := resolveParsedFlow(
 				t.Context(),
 				s.resolve,
-				bindResolveDenyingPolicy(s.Client),
+				s.Client,
 				parseCalicoFlow(tc.flow),
 			)
 			require.Equal(t, tc.processFlowResult.outcome, result.outcome)

@@ -129,7 +129,7 @@ func (s *CalicoScraper) stream(ctx context.Context, successfulConnection *bool) 
 		*successfulConnection = true
 		dumpFlow(ctx, s.Logger, s.FlowDumperBuffer, flowResult)
 
-		result := resolveParsedFlow(ctx, s.resolve, bindResolveDenyingPolicy(s.Client), parseCalicoFlow(flowResult))
+		result := resolveParsedFlow(ctx, s.resolve, s.Client, parseCalicoFlow(flowResult))
 		switch result.outcome {
 		case processFlowOutcomeSkip:
 			// nothing; continue
