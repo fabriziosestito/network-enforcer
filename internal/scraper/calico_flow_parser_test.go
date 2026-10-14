@@ -18,6 +18,7 @@ import (
 	"github.com/kubewarden/network-enforcer/internal/testutil"
 	"github.com/kubewarden/network-enforcer/internal/types"
 	"github.com/kubewarden/network-enforcer/internal/violation"
+	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
 const (
@@ -398,6 +399,7 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithObjects(
 			clientPod, serverPod, jobPod, clientDeploy, serverDeploy, stsPod, dsPod, sts, ds,
 			&securityv1alpha1.WorkloadNetworkPolicy{
@@ -411,6 +413,7 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("http-client"),
 						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},
@@ -426,6 +429,7 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("http-server"),
 						Direction: networkingv1.PolicyTypeIngress,
 					},
 				},
@@ -441,6 +445,7 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("http-client"),
 						Direction: networkingv1.PolicyTypeIngress,
 					},
 				},
@@ -456,6 +461,7 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 						},
 					},
 					WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+						TargetRef: deploymentTarget("http-server"),
 						Direction: networkingv1.PolicyTypeEgress,
 					},
 				},

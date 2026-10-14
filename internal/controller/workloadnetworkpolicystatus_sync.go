@@ -220,7 +220,7 @@ func (r *WorkloadNetworkPolicyStatusSync) correlateViolationsToWNPs(
 // An explicit DENY names the enforcing policy directly (for the Istio provider
 // the AuthorizationPolicy shares the WNP name). An ALLOW-miss carries no denying
 // policy on the wire, so the scraper pre-resolves its owning WNP by matching the
-// destination pod's labels against WNP selectors and writes it into the same
+// destination workload's (targetRef, direction) and writes it into the same
 // fields (see istio.Enricher). An empty name means the observation could not be
 // correlated and is dropped.
 func (r *WorkloadNetworkPolicyStatusSync) wnpKeyForViolation(

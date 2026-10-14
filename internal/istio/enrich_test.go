@@ -22,6 +22,7 @@ import (
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 	"github.com/kubewarden/network-enforcer/internal/violation"
+	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
 // newTestLogger returns a [slog.Logger] that discards output, for enrichment
@@ -46,12 +47,13 @@ func newEnricherScheme() *runtime.Scheme {
 }
 
 // newEnricherWithObjects builds an Enricher backed by a fake client seeded with
-// the given objects. The status.podIP field index is registered so source
-// resolution behaves as it does in production.
+// the given objects. The status.podIP and WNP target field indexes are
+// registered so resolution behaves as it does in production.
 func newEnricherWithObjects(objs ...client.Object) *Enricher {
 	return NewEnricher(fake.NewClientBuilder().
 		WithScheme(newEnricherScheme()).
 		WithIndex(&corev1.Pod{}, PodIPIndexField, IndexPodByIP).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithObjects(objs...).
 		Build())
 }
@@ -62,6 +64,7 @@ func newEnricherWithListError() *Enricher {
 	return NewEnricher(fake.NewClientBuilder().
 		WithScheme(newEnricherScheme()).
 		WithIndex(&corev1.Pod{}, PodIPIndexField, IndexPodByIP).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithInterceptorFuncs(interceptor.Funcs{
 			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
 				return errFake
@@ -77,6 +80,7 @@ func newEnricherWithGetError() *Enricher {
 	return NewEnricher(fake.NewClientBuilder().
 		WithScheme(newEnricherScheme()).
 		WithIndex(&corev1.Pod{}, PodIPIndexField, IndexPodByIP).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 				return errFake
@@ -116,40 +120,51 @@ func destPod(deployName, namespace, serviceAccount string, matchLabels map[strin
 	return pod
 }
 
-// istioWNP builds an Istio-backend WorkloadNetworkPolicy whose selector matches
-// the given labels, for ALLOW-miss owning-policy resolution tests.
-func istioWNP(namespace, name string, matchLabels map[string]string) *securityv1alpha1.WorkloadNetworkPolicy {
+// istioWNP builds an Istio-backend WorkloadNetworkPolicy targeting the given
+// Deployment for Ingress, the only direction ztunnel enforces.
+func istioWNP(namespace, name, deployName string) *securityv1alpha1.WorkloadNetworkPolicy {
 	return &securityv1alpha1.WorkloadNetworkPolicy{
 		Name: name, Namespace: namespace,
 		Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
 			PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
 				Backend: securityv1alpha1.PolicyBackendIstio,
 				Istio: &securityv1alpha1.IstioAuthorizationPolicySpec{
-					Selector: metav1.LabelSelector{MatchLabels: matchLabels},
+					Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": deployName}},
 				},
 			},
 			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+				TargetRef: securityv1alpha1.WorkloadTargetRef{
+					Kind: securityv1alpha1.WorkloadKindDeployment,
+					Name: deployName,
+				},
 				Direction: networkingv1.PolicyTypeIngress,
 			},
 		},
 	}
 }
 
-// kubernetesWNP builds a Kubernetes-backend WorkloadNetworkPolicy whose pod
-// selector matches the given labels, for ALLOW-miss owning-policy resolution
-// tests of the kubernetes backend.
-func kubernetesWNP(namespace, name string, matchLabels map[string]string) *securityv1alpha1.WorkloadNetworkPolicy {
+// kubernetesWNP builds a Kubernetes-backend WorkloadNetworkPolicy targeting the
+// given Deployment in the given direction.
+func kubernetesWNP(
+	namespace, name, deployName string,
+	direction networkingv1.PolicyType,
+) *securityv1alpha1.WorkloadNetworkPolicy {
 	return &securityv1alpha1.WorkloadNetworkPolicy{
 		Name: name, Namespace: namespace,
 		Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
 			PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
 				Backend: securityv1alpha1.PolicyBackendKubernetes,
 				Kubernetes: &networkingv1.NetworkPolicySpec{
-					PodSelector: metav1.LabelSelector{MatchLabels: matchLabels},
+					PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": deployName}},
+					PolicyTypes: []networkingv1.PolicyType{direction},
 				},
 			},
 			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
-				Direction: networkingv1.PolicyTypeIngress,
+				TargetRef: securityv1alpha1.WorkloadTargetRef{
+					Kind: securityv1alpha1.WorkloadKindDeployment,
+					Name: deployName,
+				},
+				Direction: direction,
 			},
 		},
 	}
@@ -270,12 +285,12 @@ func TestResolveSourceWorkload(t *testing.T) {
 func TestResolveOwningPolicy(t *testing.T) {
 	t.Parallel()
 
-	// pod is the ALLOW-miss destination whose labels are matched against WNP
-	// selectors. It carries app=frontend.
-	pod := destPod("frontend", "ns-dst", "frontend-sa", map[string]string{"app": "frontend"})
-	egress := istioWNP("ns-dst", "aaa-egress", map[string]string{"app": "frontend"})
-	egress.Spec.Direction = networkingv1.PolicyTypeEgress
-	noDirection := istioWNP("ns-dst", "no-direction", map[string]string{"app": "frontend"})
+	dest := &securityv1alpha1.WorkloadRef{
+		Namespace: "ns-dst",
+		OwnerKind: securityv1alpha1.WorkloadKindDeployment,
+		OwnerName: "frontend",
+	}
+	noDirection := istioWNP("ns-dst", "no-direction", "frontend")
 	noDirection.Spec.Direction = ""
 
 	cases := []struct {
@@ -284,17 +299,17 @@ func TestResolveOwningPolicy(t *testing.T) {
 		// enricher overrides the default enricher (built from objs) for the
 		// list-error case.
 		enricher *Enricher
-		wantErr  bool
+		wantErr  error
 		wantNS   string
 		wantName string
 	}{
 		{
 			// A same-labelled WNP in another namespace must be ignored: correlation
 			// is scoped to the destination pod's namespace.
-			name: "single istio WNP selects the pod, cross-namespace WNP ignored",
+			name: "single istio WNP targets the workload, cross-namespace WNP ignored",
 			objs: []client.Object{
-				istioWNP("ns-dst", "user-named-wnp", map[string]string{"app": "frontend"}),
-				istioWNP("other-ns", "decoy-wnp", map[string]string{"app": "frontend"}),
+				istioWNP("ns-dst", "user-named-wnp", "frontend"),
+				istioWNP("other-ns", "decoy-wnp", "frontend"),
 			},
 			wantNS:   "ns-dst",
 			wantName: "user-named-wnp",
@@ -304,56 +319,51 @@ func TestResolveOwningPolicy(t *testing.T) {
 			// its selector would match, so it is skipped and leaves the owner unresolved.
 			name: "kubernetes-backend WNP is ignored",
 			objs: []client.Object{
-				kubernetesWNP("ns-dst", "k8s-wnp", map[string]string{"app": "frontend"}),
+				kubernetesWNP("ns-dst", "k8s-wnp", "frontend", networkingv1.PolicyTypeIngress),
 			},
-			wantErr: true,
+			wantNS:   "ns-dst",
+			wantName: "k8s-wnp",
 		},
 		{
-			name: "ingress ignores egress with identical selector even when egress sorts first",
+			name: "ingress ignores egress for the same workload",
 			objs: []client.Object{
-				egress,
-				istioWNP("ns-dst", "zzz-ingress", map[string]string{"app": "frontend"}),
+				kubernetesWNP("ns-dst", "aaa-egress", "frontend", networkingv1.PolicyTypeEgress),
+				istioWNP("ns-dst", "zzz-ingress", "frontend"),
 			},
 			wantNS:   "ns-dst",
 			wantName: "zzz-ingress",
 		},
 		{
-			name:    "egress-only policy cannot own an inbound violation",
-			objs:    []client.Object{egress},
-			wantErr: true,
+			name: "egress-only policy cannot own an inbound violation",
+			objs: []client.Object{
+				kubernetesWNP("ns-dst", "egress-wnp", "frontend", networkingv1.PolicyTypeEgress),
+			},
+			wantErr: workload.ErrTargetNotFound,
 		},
 		{
 			name:    "policy without direction is ignored",
 			objs:    []client.Object{noDirection},
-			wantErr: true,
+			wantErr: workload.ErrTargetNotFound,
 		},
 		{
-			name: "multiple matching WNPs pick the first sorted by name",
+			name: "multiple WNPs targeting the workload is an error",
 			objs: []client.Object{
-				istioWNP("ns-dst", "bbb-wnp", map[string]string{"app": "frontend"}),
-				istioWNP("ns-dst", "aaa-wnp", map[string]string{"app": "frontend"}),
+				istioWNP("ns-dst", "bbb-wnp", "frontend"),
+				istioWNP("ns-dst", "aaa-wnp", "frontend"),
 			},
-			wantNS:   "ns-dst",
-			wantName: "aaa-wnp",
+			wantErr: workload.ErrDuplicateTarget,
 		},
 		{
-			name: "empty selector is skipped and never matches",
+			name: "no WNP targets the workload",
 			objs: []client.Object{
-				istioWNP("ns-dst", "catch-all", map[string]string{}),
+				istioWNP("ns-dst", "other-wnp", "other"),
 			},
-			wantErr: true,
-		},
-		{
-			name: "no WNP selects the pod",
-			objs: []client.Object{
-				istioWNP("ns-dst", "other-wnp", map[string]string{"app": "other"}),
-			},
-			wantErr: true,
+			wantErr: workload.ErrTargetNotFound,
 		},
 		{
 			name:     "list error is returned to caller",
 			enricher: newEnricherWithListError(),
-			wantErr:  true,
+			wantErr:  errFake,
 		},
 	}
 
@@ -365,10 +375,10 @@ func TestResolveOwningPolicy(t *testing.T) {
 			if e == nil {
 				e = newEnricherWithObjects(c.objs...)
 			}
-			owner, err := e.resolveOwningPolicy(context.Background(), newTestLogger(), pod)
+			owner, err := e.resolveOwningPolicy(context.Background(), dest)
 
-			if c.wantErr {
-				require.Error(t, err)
+			if c.wantErr != nil {
+				require.ErrorIs(t, err, c.wantErr)
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, c.wantNS, owner.Namespace)
@@ -381,8 +391,7 @@ func TestResolveOwningPolicy(t *testing.T) {
 func TestEnrich(t *testing.T) {
 	t.Parallel()
 
-	egress := istioWNP("ns-app", "aaa-egress", map[string]string{"app": "server"})
-	egress.Spec.Direction = networkingv1.PolicyTypeEgress
+	egress := kubernetesWNP("ns-app", "aaa-egress", "server", networkingv1.PolicyTypeEgress)
 
 	cases := []struct {
 		name string
@@ -398,7 +407,7 @@ func TestEnrich(t *testing.T) {
 	}{
 		{
 			// The source (by peer IP), the destination (by pod name), and the owning
-			// WNP (by selector match on the dest pod) all resolve. WNP violations are
+			// WNP (by the dest workload's targetRef) all resolve. WNP violations are
 			// always ALLOW-miss, so the owning WNP is recorded in the DenyingPolicy
 			// fields. Uses ns-app for the destination to confirm the dest fetch and
 			// WNP search are scoped to the destination's own namespace.
@@ -406,7 +415,7 @@ func TestEnrich(t *testing.T) {
 			objs: []client.Object{
 				deploymentPod("client", "ns-src", "10.244.0.2", "client-sa"),
 				destPod("server", "ns-app", "server-sa", map[string]string{"app": "server"}),
-				istioWNP("ns-app", "user-named-wnp", map[string]string{"app": "server"}),
+				istioWNP("ns-app", "user-named-wnp", "server"),
 				egress,
 			},
 			obs: violation.Observation{
@@ -438,12 +447,12 @@ func TestEnrich(t *testing.T) {
 			},
 		},
 		{
-			// An ALLOW-miss whose dest pod matches no WNP selector leaves the owning
+			// An ALLOW-miss whose dest workload no WNP targets leaves the owning
 			// policy unresolved (the controller then drops it).
 			name: "ALLOW-miss with no matching WNP leaves policy empty",
 			objs: []client.Object{
 				destPod("orphan", "ns-dst", "orphan-sa", map[string]string{"app": "orphan"}),
-				istioWNP("ns-dst", "other-wnp", map[string]string{"app": "other"}),
+				istioWNP("ns-dst", "other-wnp", "other"),
 			},
 			obs: violation.Observation{
 				ViolationInfo: securityv1alpha1.ViolationInfo{
@@ -519,7 +528,7 @@ func TestEnrich(t *testing.T) {
 			// drops the uncorrelatable observation).
 			name: "empty dest namespace skips dest enrichment",
 			objs: []client.Object{
-				istioWNP("ns-dst", "user-named-wnp", map[string]string{"app": "server"}),
+				istioWNP("ns-dst", "user-named-wnp", "server"),
 			},
 			obs: violation.Observation{
 				ViolationInfo: securityv1alpha1.ViolationInfo{

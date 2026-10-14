@@ -40,6 +40,7 @@ import (
 	"github.com/kubewarden/network-enforcer/internal/tlsutil"
 	"github.com/kubewarden/network-enforcer/internal/types"
 	"github.com/kubewarden/network-enforcer/internal/violation"
+	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
 type fakeOtelEventLogger struct {
@@ -78,6 +79,10 @@ func otlpRecord(attrs map[string]string, unixNano int64) *logspb.LogRecord {
 		})
 	}
 	return rec
+}
+
+func deploymentTarget(name string) securityv1alpha1.WorkloadTargetRef {
+	return securityv1alpha1.WorkloadTargetRef{Kind: securityv1alpha1.WorkloadKindDeployment, Name: name}
 }
 
 func TestExportRoutesRecordsByEventType(t *testing.T) {
@@ -248,6 +253,7 @@ func TestExportRoutesRecordsByEventType(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithIndex(&corev1.Pod{}, istio.PodIPIndexField, istio.IndexPodByIP).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithObjects(learnDstPod, learnDstDeploy).
 		Build()
 
@@ -294,7 +300,7 @@ func TestExportRoutesRecordsByEventType(t *testing.T) {
 // TestExportEnrichesObservations verifies that when the scraper is configured
 // with an Enricher, the observation reaching both the OTel stream and the
 // violation buffer carries the resolved source/destination workloads and SPIFFE
-// identities, and that the owning WNP is resolved by selector for both protect
+// identities, and that the owning WNP is resolved by targetRef for both protect
 // and monitor events (WNP violations are always ALLOW-miss).
 func TestExportEnrichesObservations(t *testing.T) {
 	t.Parallel()
@@ -330,7 +336,7 @@ func TestExportEnrichesObservations(t *testing.T) {
 		Spec: corev1.PodSpec{ServiceAccountName: "http-server-sa"},
 	}
 	// owningWNP selects the destination workload by label, so an ALLOW-miss (which
-	// carries no denying policy on the wire) resolves its owning WNP by selector.
+	// carries no denying policy on the wire) resolves its owning WNP by targetRef.
 	owningWNP := &securityv1alpha1.WorkloadNetworkPolicy{
 		Name: "allow-http-server", Namespace: "default",
 		Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
@@ -341,6 +347,7 @@ func TestExportEnrichesObservations(t *testing.T) {
 				},
 			},
 			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+				TargetRef: deploymentTarget("http-server"),
 				Direction: networkingv1.PolicyTypeIngress,
 			},
 		},
@@ -353,6 +360,7 @@ func TestExportEnrichesObservations(t *testing.T) {
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithIndex(&corev1.Pod{}, istio.PodIPIndexField, istio.IndexPodByIP).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithObjects(srcPod, dstPod, owningWNP).
 		Build()
 
@@ -377,7 +385,7 @@ func TestExportEnrichesObservations(t *testing.T) {
 		want  violation.Observation
 	}{
 		{
-			name: "protect ALLOW-miss resolves workloads and owning WNP by selector",
+			name: "protect ALLOW-miss resolves workloads and owning WNP by targetRef",
 			attrs: map[string]string{
 				eventTypeKey:         eventTypeProtect,
 				dstNamespacedNameKey: "default/" + dstPodName,
@@ -397,7 +405,7 @@ func TestExportEnrichesObservations(t *testing.T) {
 			},
 		},
 		{
-			name: "monitor ALLOW-miss resolves workloads and owning WNP by selector",
+			name: "monitor ALLOW-miss resolves workloads and owning WNP by targetRef",
 			attrs: map[string]string{
 				eventTypeKey:         eventTypeMonitor,
 				dstNamespacedNameKey: "default/" + dstPodName,

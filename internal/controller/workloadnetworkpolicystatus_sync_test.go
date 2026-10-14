@@ -60,9 +60,9 @@ func newViolation(
 // observations to their owning WorkloadNetworkPolicy. Both DENY and ALLOW-miss
 // observations carry the owning policy in DenyingPolicyNamespace/Name by the
 // time they reach the controller (the scraper resolves the ALLOW-miss owner by
-// selector match, see istio.Enricher), so the controller no longer inspects pod
-// labels — it only keys by the recorded policy name and drops what it cannot
-// correlate.
+// (targetRef, direction), see istio.Enricher), so the controller no longer
+// inspects pod labels — it only keys by the recorded policy name and drops
+// what it cannot correlate.
 func TestCorrelateViolationsToWNPs(t *testing.T) {
 	t.Parallel()
 
