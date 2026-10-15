@@ -27,11 +27,7 @@ func (r *WorkloadNetworkPolicyReconciler) reconcileK8sPolicy(
 	case err != nil && !apierrors.IsNotFound(err):
 		return fmt.Errorf("failed to get NetworkPolicy: %w", err)
 	case err == nil && !metav1.IsControlledBy(np, wnp):
-		log.Error(err, "refusing to manage existing NetworkPolicy not controlled by a WorkloadNetworkPolicy",
-			"namespace", np.Namespace,
-			"name", np.Name,
-		)
-		return nil
+		return &policyOwnershipConflictError{kind: "NetworkPolicy", key: wnp.NamespacedName()}
 	case apierrors.IsNotFound(err) &&
 		wnp.Spec.Mode == securityv1alpha1.WorkloadNetworkPolicyModeMonitor:
 		// Nothing to do in monitor mode if the policy doesn't exist

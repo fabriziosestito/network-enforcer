@@ -97,9 +97,10 @@ func TestWorkloadNetworkPolicyReconcilerIstioProtect(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name       string
-		setup      func() []client.Object
-		expectedAP *istiosecurityv1.AuthorizationPolicy
+		name              string
+		setup             func() []client.Object
+		expectedAP        *istiosecurityv1.AuthorizationPolicy
+		ownershipConflict bool
 	}{
 		{
 			name: "create_protect_mode",
@@ -116,7 +117,8 @@ func TestWorkloadNetworkPolicyReconcilerIstioProtect(t *testing.T) {
 			expectedAP: createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeMonitor),
 		},
 		{
-			name: "not_controller_policy_exists",
+			name:              "not_controller_policy_exists",
+			ownershipConflict: true,
 			setup: func() []client.Object {
 				ap := createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect)
 				// we remove the owner reference
@@ -156,7 +158,12 @@ func TestWorkloadNetworkPolicyReconcilerIstioProtect(t *testing.T) {
 			key := types.NamespacedName{Name: "test-policy", Namespace: "default"}
 			r := newTestWNPreconciler(t, tc.setup()...)
 			_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
-			require.NoError(t, err)
+			if tc.ownershipConflict {
+				var ownershipErr *policyOwnershipConflictError
+				require.ErrorAs(t, err, &ownershipErr)
+			} else {
+				require.NoError(t, err)
+			}
 			currentAP := &istiosecurityv1.AuthorizationPolicy{}
 			require.NoError(t, r.Get(t.Context(),
 				types.NamespacedName{Name: tc.expectedAP.Name, Namespace: tc.expectedAP.Namespace}, currentAP))

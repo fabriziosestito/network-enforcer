@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -9,6 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -21,6 +23,17 @@ import (
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
+
+const reasonPolicyOwnershipConflict = "PolicyOwnershipConflict"
+
+type policyOwnershipConflictError struct {
+	kind string
+	key  client.ObjectKey
+}
+
+func (e *policyOwnershipConflictError) Error() string {
+	return fmt.Sprintf("%s %s is not controlled by this WorkloadNetworkPolicy", e.kind, e.key)
+}
 
 // WorkloadNetworkPolicyReconciler reconciles WorkloadNetworkPolicy resources.
 type WorkloadNetworkPolicyReconciler struct {
@@ -53,15 +66,28 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 		return ctrl.Result{}, err
 	}
 
-	if condition.Reason != reasonSelectorDoesNotMatchTarget {
-		if wnp.Spec.IsKubernetesBackend() {
-			err = r.reconcileK8sPolicy(ctx, log, &wnp)
-		} else {
-			err = r.reconcileIstioPolicy(ctx, log, &wnp)
+	if condition.Reason == reasonSelectorDoesNotMatchTarget &&
+		wnp.Spec.Mode != securityv1alpha1.WorkloadNetworkPolicyModeMonitor {
+		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, condition)
+	}
+
+	if wnp.Spec.IsKubernetesBackend() {
+		err = r.reconcileK8sPolicy(ctx, log, &wnp)
+	} else {
+		err = r.reconcileIstioPolicy(ctx, &wnp)
+	}
+	if err != nil {
+		if ownershipErr, ok := errors.AsType[*policyOwnershipConflictError](err); ok {
+			condition = metav1.Condition{
+				Type:               conditionReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: wnp.Generation,
+				Reason:             reasonPolicyOwnershipConflict,
+				Message:            ownershipErr.Error(),
+			}
+			return ctrl.Result{}, errors.Join(err, r.updateReadyCondition(ctx, &wnp, condition))
 		}
-		if err != nil {
-			return ctrl.Result{}, err
-		}
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, condition)
