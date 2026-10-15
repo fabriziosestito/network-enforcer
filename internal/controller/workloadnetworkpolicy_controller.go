@@ -24,7 +24,10 @@ import (
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
 
-const reasonPolicyOwnershipConflict = "PolicyOwnershipConflict"
+const (
+	reasonPolicyOwnershipConflict    = "PolicyOwnershipConflict"
+	reasonPolicyReconciliationFailed = "PolicyReconciliationFailed"
+)
 
 type policyOwnershipConflictError struct {
 	kind string
@@ -81,17 +84,18 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 		err = r.reconcileIstioPolicy(ctx, &wnp)
 	}
 	if err != nil {
-		if ownershipErr, ok := errors.AsType[*policyOwnershipConflictError](err); ok {
-			condition = metav1.Condition{
-				Type:               conditionReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: wnp.Generation,
-				Reason:             reasonPolicyOwnershipConflict,
-				Message:            ownershipErr.Error(),
-			}
-			return ctrl.Result{}, errors.Join(err, r.updateReadyCondition(ctx, &wnp, condition))
+		reason := reasonPolicyReconciliationFailed
+		if _, ok := errors.AsType[*policyOwnershipConflictError](err); ok {
+			reason = reasonPolicyOwnershipConflict
 		}
-		return ctrl.Result{}, err
+		condition = metav1.Condition{
+			Type:               conditionReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: wnp.Generation,
+			Reason:             reason,
+			Message:            err.Error(),
+		}
+		return ctrl.Result{}, errors.Join(err, r.updateReadyCondition(ctx, &wnp, condition))
 	}
 
 	return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, condition)

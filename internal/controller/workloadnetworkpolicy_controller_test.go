@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
@@ -98,6 +101,77 @@ func TestWorkloadNetworkPolicyOwnershipConflict(t *testing.T) {
 				require.NoError(t, r.Delete(t.Context(), policy))
 				require.Equal(t, metav1.ConditionTrue, reconcileScopePolicy(t, r, wnp).Status)
 				requirePolicyMode(t, r, wnp)
+			})
+		}
+	}
+}
+
+func TestWorkloadNetworkPolicyRecreationFailure(t *testing.T) {
+	t.Parallel()
+	for _, backend := range []securityv1alpha1.PolicyBackend{
+		securityv1alpha1.PolicyBackendKubernetes, securityv1alpha1.PolicyBackendIstio,
+	} {
+		for _, tc := range []struct {
+			name     string
+			patchErr error
+		}{
+			{name: "status succeeds"},
+			{name: "status fails", patchErr: errors.New("status unavailable")},
+		} {
+			t.Run(string(backend)+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				wnp := scopePolicy(backend)
+				target := scopeWorkload(wnp.Spec.TargetRef.Kind, "web", wnp.Namespace, map[string]string{"app": "web"})
+				r := newTestWNPreconciler(t, wnp, target)
+				require.Equal(t, metav1.ConditionTrue, reconcileScopePolicy(t, r, wnp).Status)
+				generation := wnp.Generation
+				policy := renderedPolicyObject(backend)
+				require.NoError(t, r.Get(t.Context(), wnp.NamespacedName(), policy))
+				require.NoError(t, r.Delete(t.Context(), policy))
+
+				baseClient, ok := r.Client.(client.WithWatch)
+				require.True(t, ok)
+				backendErr := errors.New("policy creation denied by quota")
+				patchErr := tc.patchErr
+				r.Client = interceptor.NewClient(baseClient, interceptor.Funcs{
+					Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+						return backendErr
+					},
+					SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+						if patchErr != nil {
+							return patchErr
+						}
+						return c.SubResource(subresource).Patch(ctx, obj, patch, opts...)
+					},
+				})
+				request := ctrl.Request{NamespacedName: wnp.NamespacedName()}
+				_, err := r.Reconcile(t.Context(), request)
+				require.ErrorIs(t, err, backendErr)
+				if tc.patchErr != nil {
+					require.ErrorIs(t, err, tc.patchErr)
+					patchErr = nil
+					_, err = r.Reconcile(t.Context(), request)
+					require.ErrorIs(t, err, backendErr)
+				}
+				require.NoError(t, r.Get(t.Context(), wnp.NamespacedName(), wnp))
+				condition := apiMeta.FindStatusCondition(wnp.Status.Conditions, conditionReady)
+				require.NotNil(t, condition)
+				require.Equal(t, metav1.ConditionFalse, condition.Status)
+				require.Equal(t, "PolicyReconciliationFailed", condition.Reason)
+				require.Equal(t, generation, condition.ObservedGeneration)
+				require.Contains(t, condition.Message, backendErr.Error())
+				require.True(t, apierrors.IsNotFound(r.Get(t.Context(), wnp.NamespacedName(), policy)))
+
+				version := wnp.ResourceVersion
+				_, err = r.Reconcile(t.Context(), request)
+				require.ErrorIs(t, err, backendErr)
+				require.NoError(t, r.Get(t.Context(), wnp.NamespacedName(), wnp))
+				require.Equal(t, version, wnp.ResourceVersion)
+
+				r.Client = baseClient
+				require.Equal(t, metav1.ConditionTrue, reconcileScopePolicy(t, r, wnp).Status)
+				require.Equal(t, generation, wnp.Generation)
+				requireRenderedScopePolicy(t, r, wnp)
 			})
 		}
 	}
