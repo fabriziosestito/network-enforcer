@@ -89,6 +89,19 @@ func selectorScopeCondition(
 	overlaps []string,
 ) metav1.Condition {
 	switch {
+	case targetFound && !targetMatches:
+		return metav1.Condition{
+			Type:               conditionReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: wnp.Generation,
+			Reason:             reasonSelectorDoesNotMatchTarget,
+			Message: fmt.Sprintf(
+				"Policy selector does not match pod template labels of target workload %s %s/%s",
+				wnp.Spec.TargetRef.Kind,
+				wnp.Namespace,
+				wnp.Spec.TargetRef.Name,
+			),
+		}
 	case len(overlaps) > 0:
 		slices.Sort(overlaps)
 		return metav1.Condition{
@@ -106,19 +119,6 @@ func selectorScopeCondition(
 			Reason:             reasonTargetNotFound,
 			Message: fmt.Sprintf("Target workload %s %s/%s does not exist yet",
 				wnp.Spec.TargetRef.Kind, wnp.Namespace, wnp.Spec.TargetRef.Name),
-		}
-	case !targetMatches:
-		return metav1.Condition{
-			Type:               conditionReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: wnp.Generation,
-			Reason:             reasonSelectorDoesNotMatchTarget,
-			Message: fmt.Sprintf(
-				"Policy selector does not match pod template labels of target workload %s %s/%s",
-				wnp.Spec.TargetRef.Kind,
-				wnp.Namespace,
-				wnp.Spec.TargetRef.Name,
-			),
 		}
 	default:
 		return metav1.Condition{

@@ -68,7 +68,11 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 
 	if condition.Reason == reasonSelectorDoesNotMatchTarget &&
 		wnp.Spec.Mode != securityv1alpha1.WorkloadNetworkPolicyModeMonitor {
-		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, condition)
+		retainedCondition, checkErr := r.checkRetainedPolicyScope(ctx, &wnp, condition)
+		if checkErr != nil {
+			return ctrl.Result{}, errors.Join(checkErr, r.updateReadyCondition(ctx, &wnp, condition))
+		}
+		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, retainedCondition)
 	}
 
 	if wnp.Spec.IsKubernetesBackend() {

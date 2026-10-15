@@ -120,10 +120,51 @@ func TestSelectorScopeWorkloadWatches(t *testing.T) {
 			}
 			require.NoError(t, apiClient.Delete(ctx, sibling))
 			waitForScopeCondition(t, apiClient, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+			testRetainedPolicyWorkloadWatch(t, apiClient, wnp)
 			require.NoError(t, apiClient.Delete(ctx, target))
 			waitForScopeCondition(t, apiClient, wnp.NamespacedName(), reasonTargetNotFound, metav1.ConditionFalse)
 		})
 	}
+}
+
+func testRetainedPolicyWorkloadWatch(
+	t *testing.T,
+	c client.Client,
+	wnp *securityv1alpha1.WorkloadNetworkPolicy,
+) {
+	t.Helper()
+	var np networkingv1.NetworkPolicy
+	require.NoError(t, c.Get(t.Context(), wnp.NamespacedName(), &np))
+	originalVersion := np.ResourceVersion
+	patch := client.RawPatch(types.MergePatchType,
+		[]byte(`{"spec":{"kubernetes":{"podSelector":{"matchLabels":{"app":"missing"}}}}}`))
+	require.NoError(t, c.Patch(t.Context(), wnp, patch))
+	waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorDoesNotMatchTarget, metav1.ConditionFalse)
+
+	sibling := scopeWorkload(wnp.Spec.TargetRef.Kind, "retained-canary", wnp.Namespace,
+		map[string]string{"workload": "retained-canary", "app": "web", "tier": "canary"})
+	require.NoError(t, c.Create(t.Context(), sibling))
+	condition := waitForScopeCondition(
+		t,
+		c,
+		wnp.NamespacedName(),
+		reasonSelectorOverlapsWorkload,
+		metav1.ConditionFalse,
+	)
+	require.Contains(t, condition.Message, wnp.Namespace+"/retained-canary")
+	require.Contains(t, condition.Message, "does not match")
+	require.NoError(t, c.Get(t.Context(), wnp.NamespacedName(), &np))
+	require.Equal(t, originalVersion, np.ResourceVersion)
+
+	patch = client.RawPatch(types.MergePatchType,
+		[]byte(`{"spec":{"template":{"metadata":{"labels":{"app":"other"}}}}}`))
+	require.NoError(t, c.Patch(t.Context(), sibling, patch))
+	waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorDoesNotMatchTarget, metav1.ConditionFalse)
+	require.NoError(t, c.Delete(t.Context(), sibling))
+	patch = client.RawPatch(types.MergePatchType,
+		[]byte(`{"spec":{"kubernetes":{"podSelector":{"matchLabels":{"app":"web"}}}}}`))
+	require.NoError(t, c.Patch(t.Context(), wnp, patch))
+	waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
 }
 
 func waitForScopeCondition(
