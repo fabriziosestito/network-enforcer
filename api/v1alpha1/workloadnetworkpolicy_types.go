@@ -53,6 +53,10 @@ type WorkloadNetworkPolicySpec struct {
 // WorkloadNetworkPolicyStatus defines the observed state of a
 // WorkloadNetworkPolicy.
 type WorkloadNetworkPolicyStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// ObservedGeneration is the most recent generation observed for this
 	// WorkloadNetworkPolicy. It corresponds to the resource's
 	// metadata.generation, which is updated by the API server when the
@@ -99,6 +103,7 @@ type WorkloadNetworkPolicyStatus struct {
 // +kubebuilder:resource:scope=Namespaced,shortName=wnp
 // +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=='Ready')].status`
 // +kubebuilder:printcolumn:name="Active Violations",type=integer,JSONPath=`.status.activeViolationCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type WorkloadNetworkPolicy struct {
