@@ -50,6 +50,7 @@ func (r *WorkloadNetworkPolicyReconciler) reconcileProtect(
 ) error {
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, np, func() error {
 		wnp.Spec.Kubernetes.DeepCopyInto(&np.Spec)
+		setManagedByLabel(np)
 
 		return controllerutil.SetControllerReference(wnp, np, r.Scheme)
 	}); err != nil {

@@ -424,6 +424,15 @@ func assessKubernetesPoliciesAreCreated(ctx context.Context, t *testing.T, _ *en
 			"K8s Network policy associated with %q doesn't contain the expected owner references",
 			policy.NamespacedName().String(),
 		)
+
+		require.Equal(
+			t,
+			securityv1alpha1.ManagedByLabelValue,
+			k8sPolicy.Labels[securityv1alpha1.ManagedByLabelKey],
+			"K8s Network policy associated with %q doesn't contain the expected %s label",
+			policy.NamespacedName().String(),
+			securityv1alpha1.ManagedByLabelKey,
+		)
 	}
 	return ctx
 }
