@@ -140,6 +140,7 @@ func TestExportRoutesRecordsByEventType(t *testing.T) {
 			},
 			wantRecord: &violation.Observation{
 				Provider:  securityv1alpha1.PolicyBackendIstio,
+				Direction: networkingv1.PolicyTypeIngress,
 				Timestamp: metav1.NewTime(wantTimestamp),
 				Source:    securityv1alpha1.WorkloadRef{OwnerName: "10.244.0.9:46266"},
 				Dest: securityv1alpha1.WorkloadRef{
@@ -163,6 +164,7 @@ func TestExportRoutesRecordsByEventType(t *testing.T) {
 			},
 			wantRecord: &violation.Observation{
 				Provider:  securityv1alpha1.PolicyBackendIstio,
+				Direction: networkingv1.PolicyTypeIngress,
 				Timestamp: metav1.NewTime(wantTimestamp),
 				Source:    securityv1alpha1.WorkloadRef{OwnerName: "10.244.0.5:49084"},
 				Dest: securityv1alpha1.WorkloadRef{
@@ -185,6 +187,7 @@ func TestExportRoutesRecordsByEventType(t *testing.T) {
 			},
 			wantRecord: &violation.Observation{
 				Provider:  securityv1alpha1.PolicyBackendIstio,
+				Direction: networkingv1.PolicyTypeIngress,
 				Timestamp: metav1.NewTime(wantTimestamp),
 				Source:    securityv1alpha1.WorkloadRef{OwnerName: "10.244.0.5:52814"},
 				Dest: securityv1alpha1.WorkloadRef{
@@ -392,7 +395,8 @@ func TestExportEnrichesObservations(t *testing.T) {
 				srcAddrKey:           "10.244.0.9:46266",
 			},
 			want: violation.Observation{
-				Provider: securityv1alpha1.PolicyBackendIstio,
+				Provider:  securityv1alpha1.PolicyBackendIstio,
+				Direction: networkingv1.PolicyTypeIngress,
 				ViolationInfo: securityv1alpha1.ViolationInfo{
 					Timestamp:              metav1.NewTime(wantTimestamp),
 					Source:                 wantSource,
@@ -412,7 +416,8 @@ func TestExportEnrichesObservations(t *testing.T) {
 				srcAddrKey:           "10.244.0.9:46266",
 			},
 			want: violation.Observation{
-				Provider: securityv1alpha1.PolicyBackendIstio,
+				Provider:  securityv1alpha1.PolicyBackendIstio,
+				Direction: networkingv1.PolicyTypeIngress,
 				ViolationInfo: securityv1alpha1.ViolationInfo{
 					Timestamp:              metav1.NewTime(wantTimestamp),
 					Source:                 wantSource,
@@ -467,6 +472,7 @@ func TestPolicyEventToObservation(t *testing.T) {
 	require.Equal(t, "http-server-6cbcc86f5d-lhq82", obs.Dest.OwnerName)
 	require.Equal(t, corev1.ProtocolTCP, obs.Protocol)
 	require.Equal(t, securityv1alpha1.WorkloadNetworkPolicyModeProtect, obs.Action)
+	require.Equal(t, networkingv1.PolicyTypeIngress, obs.Direction)
 	require.Equal(t, "default", obs.DenyingPolicyNamespace)
 	require.Equal(t, "deny-http-server-protect", obs.DenyingPolicyName)
 }
