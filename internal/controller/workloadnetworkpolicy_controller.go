@@ -2,28 +2,53 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/prometheus/client_golang/prometheus"
 	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
+
+const (
+	reasonPolicyOwnershipConflict    = "PolicyOwnershipConflict"
+	reasonPolicyReconciliationFailed = "PolicyReconciliationFailed"
+)
+
+type policyOwnershipConflictError struct {
+	kind string
+	key  client.ObjectKey
+}
+
+func (e *policyOwnershipConflictError) Error() string {
+	return fmt.Sprintf("%s %s is not controlled by this WorkloadNetworkPolicy", e.kind, e.key)
+}
 
 // WorkloadNetworkPolicyReconciler reconciles WorkloadNetworkPolicy resources.
 type WorkloadNetworkPolicyReconciler struct {
 	client.Client
 
 	Scheme *runtime.Scheme
+
+	selectorOverlaps prometheus.Counter
 }
 
 // +kubebuilder:rbac:groups=networkenforcer.kubewarden.io,resources=workloadnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.istio.io,resources=authorizationpolicies,verbs=get;list;watch;create;update;patch;delete
 
@@ -39,17 +64,58 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if wnp.Spec.IsKubernetesBackend() {
-		return ctrl.Result{}, r.reconcileK8sPolicy(ctx, log, &wnp)
+	condition, err := r.checkSelectorScope(ctx, &wnp)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.reconcileIstioPolicy(ctx, log, &wnp)
+
+	if condition.Reason == reasonSelectorDoesNotMatchTarget &&
+		wnp.Spec.Mode != securityv1alpha1.WorkloadNetworkPolicyModeMonitor {
+		retainedCondition, checkErr := r.checkRetainedPolicyScope(ctx, &wnp, condition)
+		if checkErr != nil {
+			return ctrl.Result{}, errors.Join(checkErr, r.updateReadyCondition(ctx, &wnp, condition))
+		}
+		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, retainedCondition)
+	}
+
+	if wnp.Spec.IsKubernetesBackend() {
+		err = r.reconcileK8sPolicy(ctx, log, &wnp)
+	} else {
+		err = r.reconcileIstioPolicy(ctx, &wnp)
+	}
+	if err != nil {
+		reason := reasonPolicyReconciliationFailed
+		if _, ok := errors.AsType[*policyOwnershipConflictError](err); ok {
+			reason = reasonPolicyOwnershipConflict
+		}
+		condition = metav1.Condition{
+			Type:               conditionReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: wnp.Generation,
+			Reason:             reason,
+			Message:            err.Error(),
+		}
+		return ctrl.Result{}, errors.Join(err, r.updateReadyCondition(ctx, &wnp, condition))
+	}
+
+	return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, condition)
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkloadNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.selectorOverlaps = newSelectorOverlapsCounter()
+	if err := metrics.Registry.Register(r.selectorOverlaps); err != nil {
+		return fmt.Errorf("failed to register selector overlap metric: %w", err)
+	}
+
+	workloadHandler := handler.EnqueueRequestsFromMapFunc(r.policiesForWorkload)
+	workloadChanges := builder.WithPredicates(predicate.GenerationChangedPredicate{})
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.WorkloadNetworkPolicy{}).
-		Owns(&networkingv1.NetworkPolicy{})
+		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(&appsv1.Deployment{}, workloadHandler, workloadChanges).
+		Watches(&appsv1.StatefulSet{}, workloadHandler, workloadChanges).
+		Watches(&appsv1.DaemonSet{}, workloadHandler, workloadChanges)
 
 	// we need to disable the watch on the resource if Istio is not installed in the cluster
 	_, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{

@@ -592,6 +592,8 @@ WorkloadNetworkPolicy.
 [cols="20a,50a,15a,15a", options="header"]
 |===
 | Field | Description | Default | Validation
+| *`conditions`* __link:https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.35/#condition-v1-meta[$$Condition$$] array__ |  |  | Optional +
+
 | *`observedGeneration`* __integer__ | ObservedGeneration is the most recent generation observed for this +
 WorkloadNetworkPolicy. It corresponds to the resource's +
 metadata.generation, which is updated by the API server when the +

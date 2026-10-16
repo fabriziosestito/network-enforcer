@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,13 +32,16 @@ func newTestWNPreconciler(t *testing.T, objs ...client.Object) *WorkloadNetworkP
 	scheme := runtime.NewScheme()
 	require.NoError(t, securityv1alpha1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
 	require.NoError(t, istiosecurityv1.AddToScheme(scheme))
 
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithStatusSubresource(&securityv1alpha1.WorkloadNetworkPolicy{}).Build()
 
 	return &WorkloadNetworkPolicyReconciler{
-		Client: cl,
-		Scheme: scheme,
+		Client:           cl,
+		Scheme:           scheme,
+		selectorOverlaps: newSelectorOverlapsCounter(),
 	}
 }
 
@@ -73,9 +77,10 @@ func TestWorkloadNetworkPolicyReconcilerK8s(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name       string
-		setup      func() []client.Object
-		expectedNP *networkingv1.NetworkPolicy
+		name              string
+		setup             func() []client.Object
+		expectedNP        *networkingv1.NetworkPolicy
+		ownershipConflict bool
 	}{
 		{
 			name: "create_protect_mode",
@@ -104,7 +109,8 @@ func TestWorkloadNetworkPolicyReconcilerK8s(t *testing.T) {
 			expectedNP: createAssociatedNetworkPolicy(),
 		},
 		{
-			name: "not_controller_policy_exists",
+			name:              "not_controller_policy_exists",
+			ownershipConflict: true,
 			setup: func() []client.Object {
 				wnp := createWorkloadNetworkPolicy(securityv1alpha1.WorkloadNetworkPolicyModeMonitor)
 				// Seed an existing NetworkPolicy without owner references
@@ -135,7 +141,12 @@ func TestWorkloadNetworkPolicyReconcilerK8s(t *testing.T) {
 			key := types.NamespacedName{Name: "test-policy", Namespace: "default"}
 			r := newTestWNPreconciler(t, tc.setup()...)
 			_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
-			require.NoError(t, err)
+			if tc.ownershipConflict {
+				var ownershipErr *policyOwnershipConflictError
+				require.ErrorAs(t, err, &ownershipErr)
+			} else {
+				require.NoError(t, err)
+			}
 			np := &networkingv1.NetworkPolicy{}
 			err = r.Get(t.Context(), key, np)
 			if tc.expectedNP == nil {
