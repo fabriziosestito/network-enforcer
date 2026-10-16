@@ -117,6 +117,13 @@ func checkIstioAuthorizationPolicy(
 			rule.GetTo()[0].GetOperation().GetPorts(),
 			"rule ports do not match expected",
 		)
+
+		require.Equal(t,
+			v1alpha1.ManagedByLabelValue,
+			ap.Labels[v1alpha1.ManagedByLabelKey],
+			"AuthorizationPolicy %q doesn't contain the expected %s label",
+			istioIngressProposalName, v1alpha1.ManagedByLabelKey,
+		)
 		return ctx
 	}
 }

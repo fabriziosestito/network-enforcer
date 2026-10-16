@@ -189,6 +189,17 @@ Helm 4), which re-stamps the ownership metadata:
 helm install <release> <chart> -n <namespace> --take-ownership
 ```
 
+### Finding the low-level policies created by network-enforcer
+
+Every `NetworkPolicy` and Istio `AuthorizationPolicy` rendered from a
+`WorkloadNetworkPolicy` carries the `app.kubernetes.io/managed-by:
+network-enforcer` label, so you can list them with a single selector:
+
+```sh
+kubectl get networkpolicies,authorizationpolicies -A \
+  -l app.kubernetes.io/managed-by=network-enforcer
+```
+
 ## Uninstall
 
 ```sh

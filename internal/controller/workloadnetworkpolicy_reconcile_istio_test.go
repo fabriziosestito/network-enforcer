@@ -57,6 +57,9 @@ func createAssociatedAuthorizationPolicy(
 	ap := &istiosecurityv1.AuthorizationPolicy{
 		Name:      wnp.Name,
 		Namespace: wnp.Namespace,
+		Labels: map[string]string{
+			securityv1alpha1.ManagedByLabelKey: securityv1alpha1.ManagedByLabelValue,
+		},
 	}
 	populateIstioAuthorizationPolicySpec(&ap.Spec, wnp.Spec.Istio)
 	controller := true
@@ -84,6 +87,7 @@ func assertIstioPolicy(t *testing.T, expected, current *istiosecurityv1.Authoriz
 	require.Equal(t, expected.Name, current.Name)
 	require.Equal(t, expected.Namespace, current.Namespace)
 	require.Equal(t, expected.Annotations, current.Annotations)
+	require.Equal(t, expected.Labels, current.Labels)
 	require.Equal(t, expected.OwnerReferences, current.OwnerReferences)
 	require.Equal(t, expected.Spec.GetAction(), current.Spec.GetAction())
 	require.True(t, proto.Equal(expected.Spec.GetSelector(), current.Spec.GetSelector()))
@@ -121,14 +125,17 @@ func TestWorkloadNetworkPolicyReconcilerIstioProtect(t *testing.T) {
 			ownershipConflict: true,
 			setup: func() []client.Object {
 				ap := createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect)
-				// we remove the owner reference
+				// we remove the owner reference and our managed-by label: it's
+				// not controlled by us, so we shouldn't label it either.
 				ap.OwnerReferences = nil
+				ap.Labels = nil
 				// the WNP is in monitor mode so we need to check that after the reconciliation the not associated policy is still in protect mode and not touched.
 				return []client.Object{createIstioWorkloadNetworkPolicy(securityv1alpha1.WorkloadNetworkPolicyModeMonitor), ap}
 			},
 			expectedAP: func() *istiosecurityv1.AuthorizationPolicy {
 				ap := createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect)
 				ap.OwnerReferences = nil
+				ap.Labels = nil
 				return ap
 			}(),
 		},
@@ -151,6 +158,27 @@ func TestWorkloadNetworkPolicyReconcilerIstioProtect(t *testing.T) {
 				}
 			},
 			expectedAP: createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeMonitor),
+		},
+		{
+			name: "adds_label_and_preserves_user_labels",
+			setup: func() []client.Object {
+				ap := createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect)
+				// Seed an existing AuthorizationPolicy with a user-defined
+				// label and without our managed-by label, simulating a policy
+				// created before the label was introduced. Reconciliation
+				// should add the managed-by label without removing the user
+				// one.
+				ap.Labels = map[string]string{"team": "platform"}
+				return []client.Object{
+					createIstioWorkloadNetworkPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect),
+					ap,
+				}
+			},
+			expectedAP: func() *istiosecurityv1.AuthorizationPolicy {
+				ap := createAssociatedAuthorizationPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect)
+				ap.Labels["team"] = "platform"
+				return ap
+			}(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -23,6 +23,7 @@ func assertNetworkPolicy(t *testing.T, expected, current *networkingv1.NetworkPo
 	require.Equal(t, expected.Name, current.Name)
 	require.Equal(t, expected.Namespace, current.Namespace)
 	require.Equal(t, expected.Spec, current.Spec)
+	require.Equal(t, expected.Labels, current.Labels)
 	require.Equal(t, expected.OwnerReferences, current.OwnerReferences)
 }
 
@@ -109,19 +110,40 @@ func TestWorkloadNetworkPolicyReconcilerK8s(t *testing.T) {
 			expectedNP: createAssociatedNetworkPolicy(),
 		},
 		{
+			name: "adds_label_and_preserves_user_labels",
+			setup: func() []client.Object {
+				wnp := createWorkloadNetworkPolicy(securityv1alpha1.WorkloadNetworkPolicyModeProtect)
+				// Seed an existing NetworkPolicy with a user-defined label and
+				// without our managed-by label, simulating a policy created
+				// before the label was introduced. Reconciliation should add
+				// the managed-by label without removing the user one.
+				np := createAssociatedNetworkPolicy()
+				np.Labels = map[string]string{"team": "platform"}
+				return []client.Object{wnp, np}
+			},
+			expectedNP: func() *networkingv1.NetworkPolicy {
+				np := createAssociatedNetworkPolicy()
+				np.Labels["team"] = "platform"
+				return np
+			}(),
+		},
+		{
 			name:              "not_controller_policy_exists",
 			ownershipConflict: true,
 			setup: func() []client.Object {
 				wnp := createWorkloadNetworkPolicy(securityv1alpha1.WorkloadNetworkPolicyModeMonitor)
-				// Seed an existing NetworkPolicy without owner references
-				// we shouldn't delete it since it is not controlled by us.
+				// Seed an existing NetworkPolicy without owner references and
+				// without our managed-by label: it's not controlled by us, so
+				// we shouldn't delete it nor label it.
 				np := createAssociatedNetworkPolicy()
 				np.OwnerReferences = nil
+				np.Labels = nil
 				return []client.Object{wnp, np}
 			},
 			expectedNP: func() *networkingv1.NetworkPolicy {
 				np := createAssociatedNetworkPolicy()
 				np.OwnerReferences = nil
+				np.Labels = nil
 				return np
 			}(),
 		},

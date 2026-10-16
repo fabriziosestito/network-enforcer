@@ -45,6 +45,9 @@ func newOwnedNetworkPolicy(wnp *securityv1alpha1.WorkloadNetworkPolicy) *network
 	return &networkingv1.NetworkPolicy{
 		Name:      wnp.Name,
 		Namespace: wnp.Namespace,
+		Labels: map[string]string{
+			securityv1alpha1.ManagedByLabelKey: securityv1alpha1.ManagedByLabelValue,
+		},
 		OwnerReferences: []metav1.OwnerReference{
 			{
 				APIVersion:         securityv1alpha1.GroupVersion.String(),

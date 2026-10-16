@@ -37,6 +37,7 @@ func (r *WorkloadNetworkPolicyReconciler) reconcileIstioPolicy(
 
 	if _, err = controllerutil.CreateOrPatch(ctx, r.Client, ap, func() error {
 		populateIstioAuthorizationPolicySpec(&ap.Spec, wnp.Spec.Istio)
+		setManagedByLabel(ap)
 
 		if ap.Annotations == nil {
 			ap.Annotations = map[string]string{}
@@ -49,7 +50,7 @@ func (r *WorkloadNetworkPolicyReconciler) reconcileIstioPolicy(
 		}
 		return controllerutil.SetControllerReference(wnp, ap, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("failed to reconcile NetworkPolicy: %w", err)
+		return fmt.Errorf("failed to reconcile AuthorizationPolicy: %w", err)
 	}
 	return nil
 }
