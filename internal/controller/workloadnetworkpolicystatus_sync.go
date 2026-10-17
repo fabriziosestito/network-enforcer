@@ -323,7 +323,7 @@ func (r *WorkloadNetworkPolicyStatusSync) reportedOwningWNP(
 	}
 	reported := types.NamespacedName{Namespace: obs.DenyingPolicyNamespace, Name: obs.DenyingPolicyName}
 
-	if owner, found := ownedIndex[reported]; found {
+	if owner, found := ownedIndex[reported]; found && obs.Provider == securityv1alpha1.PolicyBackendKubernetes {
 		if owner == nil {
 			r.logger.V(loglevel.VerbosityDebug).Info(
 				"Reported NetworkPolicy is not managed by a WorkloadNetworkPolicy",

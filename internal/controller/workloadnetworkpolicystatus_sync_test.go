@@ -83,6 +83,9 @@ func newAttributionObservation(
 //     canary-egress. Its selector overlapping frontend's is what makes the data
 //     plane report it for frontend traffic.
 //   - dup-a, dup-b      both target Deployment/dup Egress.
+//   - web-ingress       targets Deployment/web Ingress. A NetworkPolicy also
+//     named web-ingress exists, but is owned by canary-egress: it must not be
+//     mistaken for web-ingress's AuthorizationPolicy in an Istio report.
 //   - foreign-np        a NetworkPolicy not managed by any WNP.
 //
 // Deployment/orphan has no WNP at all.
@@ -101,16 +104,19 @@ func newAttributionFixture(t *testing.T) attributionFixture {
 	canaryEgress := newTargetedWNP("canary-egress", "canary", networkingv1.PolicyTypeEgress)
 	dupA := newTargetedWNP("dup-a", "dup", networkingv1.PolicyTypeEgress)
 	dupB := newTargetedWNP("dup-b", "dup", networkingv1.PolicyTypeEgress)
+	webIngress := newTargetedWNP("web-ingress", "web", networkingv1.PolicyTypeIngress)
 
 	renamedNP := newOwnedNetworkPolicy(frontendEgress)
 	renamedNP.Name = "renamed-np"
+	namesakeNP := newOwnedNetworkPolicy(canaryEgress)
+	namesakeNP.Name = webIngress.Name
 	foreignNP := &networkingv1.NetworkPolicy{Name: "foreign-np", Namespace: attributionTestNS}
 
 	wnps := []*securityv1alpha1.WorkloadNetworkPolicy{
-		frontendEgress, frontendIngress, backendIngress, canaryEgress, dupA, dupB,
+		frontendEgress, frontendIngress, backendIngress, canaryEgress, dupA, dupB, webIngress,
 	}
 	objs := []client.Object{
-		newOwnedNetworkPolicy(frontendEgress), renamedNP, newOwnedNetworkPolicy(canaryEgress), foreignNP,
+		newOwnedNetworkPolicy(frontendEgress), renamedNP, newOwnedNetworkPolicy(canaryEgress), namesakeNP, foreignNP,
 	}
 	wnpByKey := make(map[types.NamespacedName]*securityv1alpha1.WorkloadNetworkPolicy, len(wnps))
 	for _, wnp := range wnps {
@@ -142,6 +148,8 @@ func TestAttributeViolation(t *testing.T) {
 
 	egress, ingress := networkingv1.PolicyTypeEgress, networkingv1.PolicyTypeIngress
 	frontend, backend := deploymentRef("frontend"), deploymentRef("backend")
+	webIstioReport := newAttributionObservation(ingress, frontend, deploymentRef("web"), "web-ingress")
+	webIstioReport.Provider = securityv1alpha1.PolicyBackendIstio
 
 	tests := []struct {
 		name string
@@ -170,6 +178,14 @@ func TestAttributeViolation(t *testing.T) {
 			name:    "reported_wnp_without_backing_networkpolicy",
 			obs:     newAttributionObservation(ingress, frontend, backend, "backend-ingress"),
 			wantWNP: "backend-ingress",
+		},
+		{
+			// The reported AuthorizationPolicy is resolved by WNP name; a
+			// NetworkPolicy sharing its name but owned by canary-egress must not be
+			// taken as its owner (that would count a false disagreement).
+			name:    "istio_report_ignores_namesake_networkpolicy",
+			obs:     webIstioReport,
+			wantWNP: "web-ingress",
 		},
 		// Step 2: targetRef index.
 		{

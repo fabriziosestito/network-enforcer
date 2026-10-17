@@ -32,6 +32,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
@@ -636,4 +637,101 @@ func TestStartTLSClient(t *testing.T) {
 			require.NoError(t, <-errCh)
 		})
 	}
+}
+
+// TestExportReportedPolicyOfOtherWorkloadCountsDisagreement is a scraper-to-sync
+// regression: when ztunnel reports a policy owned by a WNP targeting another
+// workload (overlapping selectors), enrichment must keep it so the controller
+// counts the disagreement, while the violation is still attributed to the
+// subject's own WNP.
+func TestExportReportedPolicyOfOtherWorkloadCountsDisagreement(t *testing.T) {
+	t.Parallel()
+
+	const podTemplateHash = "6cbcc86f5d"
+	const dstPodName = "http-server-" + podTemplateHash + "-lhq82"
+
+	dstPod := &corev1.Pod{
+		Name:      dstPodName,
+		Namespace: "default",
+		Labels: map[string]string{
+			appsv1.DefaultDeploymentUniqueLabelKey: podTemplateHash,
+			"app":                                  "http-server",
+		},
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: appsv1.SchemeGroupVersion.String(),
+			Kind:       string(securityv1alpha1.WorkloadKindReplicaSet),
+			Name:       "http-server-" + podTemplateHash,
+			Controller: new(true),
+		}},
+		Spec: corev1.PodSpec{ServiceAccountName: "http-server-sa"},
+	}
+	ingressWNP := func(name, target string) *securityv1alpha1.WorkloadNetworkPolicy {
+		return &securityv1alpha1.WorkloadNetworkPolicy{
+			Name: name, Namespace: "default",
+			Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+				PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+					Backend: securityv1alpha1.PolicyBackendIstio,
+					Istio: &securityv1alpha1.IstioAuthorizationPolicySpec{
+						Selector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "http-server"}},
+					},
+				},
+				WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+					TargetRef: deploymentTarget(target),
+					Direction: networkingv1.PolicyTypeIngress,
+				},
+			},
+		}
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, securityv1alpha1.AddToScheme(scheme))
+	// http-canary's WNP selects the http-server pods too, so ztunnel reports it
+	// for traffic whose subject is Deployment/http-server.
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, istio.PodIPIndexField, istio.IndexPodByIP).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
+		WithStatusSubresource(&securityv1alpha1.WorkloadNetworkPolicy{}).
+		WithObjects(
+			dstPod,
+			ingressWNP("allow-http-server", "http-server"),
+			ingressWNP("allow-http-canary", "http-canary"),
+		).
+		Build()
+
+	buffer := ringbuf.New[violation.Observation]()
+	scraper := NewIstioScraper(IstioScraperConfig{
+		ViolationBuffer: buffer,
+		Logger:          slog.New(slog.DiscardHandler),
+		Enricher:        istio.NewEnricher(cl),
+	})
+	attrs := map[string]string{
+		eventTypeKey:         eventTypeProtect,
+		dstNamespacedNameKey: "default/" + dstPodName,
+		policyKey:            "default/allow-http-canary",
+		srcAddrKey:           "10.244.0.9:46266",
+	}
+	_, err := scraper.Export(context.Background(), otlpRequest(otlpRecord(attrs, time.Now().UnixNano())))
+	require.NoError(t, err)
+
+	reg := startStatusSync(t, cl, buffer)
+
+	subjectWNP := k8stypes.NamespacedName{Namespace: "default", Name: "allow-http-server"}
+	require.Eventually(t, func() bool {
+		var wnp securityv1alpha1.WorkloadNetworkPolicy
+		if cl.Get(context.Background(), subjectWNP, &wnp) != nil || len(wnp.Status.Violations) != 1 {
+			return false
+		}
+		return wnp.Status.Violations[0].DenyingPolicyName == subjectWNP.Name &&
+			gatheredCounter(reg, disagreementMetric, map[string]string{"provider": "istio"}) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+
+	var canaryWNP securityv1alpha1.WorkloadNetworkPolicy
+	require.NoError(t, cl.Get(context.Background(),
+		k8stypes.NamespacedName{Namespace: "default", Name: "allow-http-canary"}, &canaryWNP))
+	require.Empty(t, canaryWNP.Status.Violations, "the reported policy's WNP must not get the violation")
+	require.Zero(t, gatheredCounter(reg, unattributedMetric, map[string]string{"provider": "istio"}))
 }
