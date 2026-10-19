@@ -1,6 +1,7 @@
 package controller
 
 import (
+	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,6 +17,7 @@ func newTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = securityv1alpha1.AddToScheme(s)
 	_ = networkingv1.AddToScheme(s)
+	_ = istiosecurityv1.AddToScheme(s)
 	_ = scheme.AddToScheme(s) // core/v1
 	return s
 }

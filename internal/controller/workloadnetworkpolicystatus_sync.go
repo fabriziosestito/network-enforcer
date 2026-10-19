@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
+	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -246,7 +247,7 @@ func (r *WorkloadNetworkPolicyStatusSync) attributeViolation(
 ) (types.NamespacedName, string) {
 	subject, hasSubject := violationSubject(obs)
 
-	if reportedWNP, ok := r.reportedOwningWNP(obs, ownedIndex, wnpByKey); ok && hasSubject {
+	if reportedWNP, ok := r.reportedOwningWNP(ctx, obs, ownedIndex, wnpByKey); ok && hasSubject {
 		targetsSubject := reportedWNP.Namespace == subject.Namespace &&
 			reportedWNP.Spec.TargetRef.Kind == subject.OwnerKind &&
 			reportedWNP.Spec.TargetRef.Name == subject.OwnerName
@@ -309,11 +310,11 @@ func violationSubject(obs violation.Observation) (securityv1alpha1.WorkloadRef, 
 }
 
 // reportedOwningWNP returns the WNP owning the enforcing object reported in the
-// observation, verified against the ownership index. A reported NetworkPolicy
-// must be controlled by a known WNP; a reported object with no NetworkPolicy
-// behind it (monitor mode deletes it, Istio renders an AuthorizationPolicy with
-// the WNP name) is accepted when a WNP with that name exists.
+// observation. A reported Istio AuthorizationPolicy or NetworkPolicy must be
+// controlled by a known WNP. A Kubernetes report with no NetworkPolicy behind
+// it (monitor mode deletes it) is accepted when a WNP with that name exists.
 func (r *WorkloadNetworkPolicyStatusSync) reportedOwningWNP(
+	ctx context.Context,
 	obs violation.Observation,
 	ownedIndex map[types.NamespacedName]*types.NamespacedName,
 	wnpByKey map[types.NamespacedName]*securityv1alpha1.WorkloadNetworkPolicy,
@@ -323,7 +324,23 @@ func (r *WorkloadNetworkPolicyStatusSync) reportedOwningWNP(
 	}
 	reported := types.NamespacedName{Namespace: obs.DenyingPolicyNamespace, Name: obs.DenyingPolicyName}
 
-	if owner, found := ownedIndex[reported]; found && obs.Provider == securityv1alpha1.PolicyBackendKubernetes {
+	// Istio reports name an AuthorizationPolicy, which the controller renders
+	// with its WNP's name: trust it only if that WNP controls it.
+	if obs.Provider == securityv1alpha1.PolicyBackendIstio {
+		var ap istiosecurityv1.AuthorizationPolicy
+		wnp, ok := wnpByKey[reported]
+		if !ok || r.Get(ctx, reported, &ap) != nil || !metav1.IsControlledBy(&ap, wnp) {
+			r.logger.V(loglevel.VerbosityDebug).Info(
+				"Reported AuthorizationPolicy is not managed by a WorkloadNetworkPolicy",
+				"reportedPolicy", reported.String())
+			return nil, false
+		}
+		return wnp, true
+	}
+
+	// Kubernetes reports name a NetworkPolicy: when it exists, trust it only if
+	// a known WNP controls it, and attribute to that owner.
+	if owner, found := ownedIndex[reported]; found {
 		if owner == nil {
 			r.logger.V(loglevel.VerbosityDebug).Info(
 				"Reported NetworkPolicy is not managed by a WorkloadNetworkPolicy",
@@ -334,6 +351,7 @@ func (r *WorkloadNetworkPolicyStatusSync) reportedOwningWNP(
 		return wnpByKey[*owner], true
 	}
 
+	// No NetworkPolicy exists, the reported name is then the WNP name.
 	if wnp, ok := wnpByKey[reported]; ok {
 		return wnp, true
 	}
