@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
-	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 	"github.com/kubewarden/network-enforcer/internal/workload"
@@ -105,47 +106,55 @@ func oldestWorkloadNetworkPolicy(
 	return &oldest
 }
 
-func (r *WorkloadNetworkPolicyReconciler) removeRenderedPolicy(
-	ctx context.Context,
-	wnp *securityv1alpha1.WorkloadNetworkPolicy,
-) error {
-	var rendered client.Object
-	if wnp.Spec.IsKubernetesBackend() {
-		rendered = &networkingv1.NetworkPolicy{}
-	} else {
-		rendered = &istiosecurityv1.AuthorizationPolicy{}
+func (r *WorkloadNetworkPolicyReconciler) duplicateTargetHandler() handler.EventHandler {
+	enqueue := func(ctx context.Context, obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+		for _, request := range r.duplicateTargetPolicies(ctx, obj) {
+			q.Add(request)
+		}
 	}
 
-	key := wnp.NamespacedName()
-	if err := r.Get(ctx, key, rendered); err != nil {
-		return client.IgnoreNotFound(err)
+	return handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, e.Object, q)
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, e.ObjectOld, q)
+			enqueue(ctx, e.ObjectNew, q)
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, e.Object, q)
+		},
 	}
-	if !metav1.IsControlledBy(rendered, wnp) {
-		return nil
-	}
-	if err := r.Delete(ctx, rendered); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to delete rendered policy for duplicate target: %w", err)
-	}
-	return nil
 }
 
-// duplicateTargetPolicies maps a WorkloadNetworkPolicy event to every other
-// policy in the namespace, so duplicate-target conflicts are detected and
-// cleared without waiting for another event on those policies.
+// duplicateTargetPolicies maps a WorkloadNetworkPolicy to the other policies
+// sharing its (targetRef, direction).
 func (r *WorkloadNetworkPolicyReconciler) duplicateTargetPolicies(
 	ctx context.Context,
 	obj client.Object,
 ) []ctrl.Request {
+	wnp, ok := obj.(*securityv1alpha1.WorkloadNetworkPolicy)
+	if !ok {
+		return nil
+	}
+	target, ok := wnpTargetKey(wnp)
+	if !ok {
+		return nil
+	}
+
 	var wnpList securityv1alpha1.WorkloadNetworkPolicyList
-	if err := r.List(ctx, &wnpList, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := r.List(ctx, &wnpList,
+		client.InNamespace(wnp.Namespace),
+		client.MatchingFields{workload.WNPTargetIndexField: target.target},
+	); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list WorkloadNetworkPolicies for policy change",
-			"namespace", obj.GetNamespace(), "name", obj.GetName())
+			"namespace", wnp.Namespace, "name", wnp.Name)
 		return nil
 	}
 
 	requests := make([]ctrl.Request, 0, len(wnpList.Items))
 	for i := range wnpList.Items {
-		if wnpList.Items[i].Name == obj.GetName() {
+		if wnpList.Items[i].Name == wnp.Name {
 			continue
 		}
 		requests = append(requests, ctrl.Request{NamespacedName: wnpList.Items[i].NamespacedName()})

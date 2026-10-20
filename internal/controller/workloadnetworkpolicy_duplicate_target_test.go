@@ -1,17 +1,25 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
@@ -61,7 +69,7 @@ func TestDuplicateTargetThreeWay(t *testing.T) {
 	}
 
 	requireRenderedScopePolicy(t, r, alpha)
-	requireNoRenderedPolicy(t, r, bravo)
+	requireRenderedScopePolicy(t, r, bravo)
 	requireNoRenderedPolicy(t, r, newest)
 	require.InDelta(t, 3, testutil.ToFloat64(r.duplicateTargets), 0)
 
@@ -122,10 +130,72 @@ func TestDuplicateTargetPolicies(t *testing.T) {
 
 	r := newTestWNPreconciler(t, ingress, sibling, egress, otherNamespace)
 	requests := r.duplicateTargetPolicies(t.Context(), ingress)
-	require.ElementsMatch(t, []ctrl.Request{
-		{NamespacedName: sibling.NamespacedName()},
-		{NamespacedName: egress.NamespacedName()},
-	}, requests)
+	require.ElementsMatch(t, []ctrl.Request{{NamespacedName: sibling.NamespacedName()}}, requests)
+}
+
+func TestDuplicateTargetConditionAppliedWhenScopeCheckFails(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldest := duplicateScopePolicy("oldest", created)
+	newer := duplicateScopePolicy("newer", created.Add(time.Hour))
+	target := scopeWorkload(oldest.Spec.TargetRef.Kind, "web", oldest.Namespace, map[string]string{"app": "web"})
+	r := newTestWNPreconciler(t, oldest, newer, target)
+
+	base, ok := r.Client.(client.WithWatch)
+	require.True(t, ok)
+	listErr := errors.New("deployment list unavailable")
+	r.Client = interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, isDeployments := list.(*appsv1.DeploymentList); isDeployments {
+				return listErr
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: oldest.NamespacedName()})
+	require.ErrorIs(t, err, listErr)
+	require.NoError(t, r.Get(t.Context(), oldest.NamespacedName(), oldest))
+	condition := apiMeta.FindStatusCondition(oldest.Status.Conditions, conditionReady)
+	require.NotNil(t, condition)
+	require.Equal(t, reasonDuplicateTarget, condition.Reason)
+	require.InDelta(t, 1, testutil.ToFloat64(r.duplicateTargets), 0)
+}
+
+func TestDuplicateTargetHandlerEnqueuesOldAndNewSiblings(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldTarget := duplicateScopePolicy("moved", created)
+	newTarget := oldTarget.DeepCopy()
+	newTarget.Spec.TargetRef.Name = "api"
+	oldSibling := duplicateScopePolicy("old-sibling", created)
+	newSibling := duplicateScopePolicy("new-sibling", created)
+	newSibling.Spec.TargetRef.Name = "api"
+
+	r := newTestWNPreconciler(t, oldSibling, newSibling)
+	q := workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[reconcile.Request](),
+	)
+	t.Cleanup(q.ShutDown)
+
+	r.duplicateTargetHandler().Update(t.Context(), event.UpdateEvent{
+		ObjectOld: oldTarget,
+		ObjectNew: newTarget,
+	}, q)
+
+	got := map[types.NamespacedName]bool{}
+	for q.Len() > 0 {
+		request, shutdown := q.Get()
+		require.False(t, shutdown)
+		got[request.NamespacedName] = true
+		q.Done(request)
+	}
+	require.Equal(t, map[types.NamespacedName]bool{
+		oldSibling.NamespacedName(): true,
+		newSibling.NamespacedName(): true,
+	}, got)
 }
 
 func TestDuplicateTargetDirectionIsolation(t *testing.T) {

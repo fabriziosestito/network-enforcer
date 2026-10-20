@@ -71,14 +71,11 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 		return ctrl.Result{}, err
 	}
 	if conflicting && !conflict.winner {
-		return ctrl.Result{}, errors.Join(
-			r.removeRenderedPolicy(ctx, &wnp),
-			r.updateReadyCondition(ctx, &wnp, conflict.condition),
-		)
+		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, conflict.condition)
 	}
 
 	condition, err := r.reconcilePolicy(ctx, log, &wnp)
-	if condition.Type == "" {
+	if condition.Type == "" && !conflicting {
 		return ctrl.Result{}, err
 	}
 	if conflicting {
@@ -146,7 +143,7 @@ func (r *WorkloadNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.WorkloadNetworkPolicy{}).
 		Watches(&securityv1alpha1.WorkloadNetworkPolicy{},
-			handler.EnqueueRequestsFromMapFunc(r.duplicateTargetPolicies), workloadChanges).
+			r.duplicateTargetHandler(), workloadChanges).
 		Owns(&networkingv1.NetworkPolicy{}).
 		Watches(&appsv1.Deployment{}, workloadHandler, workloadChanges).
 		Watches(&appsv1.StatefulSet{}, workloadHandler, workloadChanges).
