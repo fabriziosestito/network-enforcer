@@ -259,7 +259,20 @@ func TestAttributeViolation(t *testing.T) {
 			name:       "duplicate_wnps_target_subject",
 			obs:        newAttributionObservation(egress, deploymentRef("dup"), backend, ""),
 			wantReason: unattributedReasonDuplicateTargetPolicy,
-			wantLookup: true,
+		},
+		{
+			// The snapshot hides one duplicate, so the duplicate is only
+			// detected by the targetRef lookup against the cache.
+			name:                "duplicate_wnps_only_in_cache",
+			obs:                 newAttributionObservation(egress, deploymentRef("dup"), backend, ""),
+			excludeFromSnapshot: "dup-b",
+			wantReason:          unattributedReasonDuplicateTargetPolicy,
+			wantLookup:          true,
+		},
+		{
+			name:       "reported_policy_duplicate_wnps_target_subject",
+			obs:        newAttributionObservation(egress, deploymentRef("dup"), backend, "dup-a"),
+			wantReason: unattributedReasonDuplicateTargetPolicy,
 		},
 		{
 			name:       "targetref_lookup_fails",
@@ -300,6 +313,7 @@ func TestAttributeViolation(t *testing.T) {
 			if tt.excludeFromSnapshot != "" {
 				delete(fx.wnpByKey, wnpKey(tt.excludeFromSnapshot))
 			}
+			duplicates := duplicateTargets(fx.wnpByKey)
 
 			lookups := 0
 			c := interceptor.NewClient(fx.client, interceptor.Funcs{
@@ -317,7 +331,7 @@ func TestAttributeViolation(t *testing.T) {
 			m := newAttributionMetrics()
 			r := &WorkloadNetworkPolicyStatusSync{Client: c, logger: ctrl.Log.WithName("test"), metrics: m}
 
-			gotKey, gotReason := r.attributeViolation(t.Context(), tt.obs, fx.ownedIndex, fx.wnpByKey)
+			gotKey, gotReason := r.attributeViolation(t.Context(), tt.obs, fx.ownedIndex, fx.wnpByKey, duplicates)
 
 			if tt.wantWNP != "" {
 				require.Empty(t, gotReason)
@@ -358,7 +372,8 @@ func TestCorrelateViolationsToWNPs(t *testing.T) {
 		newAttributionObservation(egress, deploymentRef("dup"), backend, ""),
 	}
 
-	result := r.correlateViolationsToWNPs(t.Context(), observations, fx.ownedIndex, fx.wnpByKey)
+	result := r.correlateViolationsToWNPs(
+		t.Context(), observations, fx.ownedIndex, fx.wnpByKey, duplicateTargets(fx.wnpByKey))
 
 	require.Len(t, result, 1)
 	records := result[wnpKey("frontend-egress")]
@@ -409,7 +424,8 @@ func TestAttributeViolationOffClusterEgressPeer(t *testing.T) {
 			r := &WorkloadNetworkPolicyStatusSync{Client: fx.client, logger: ctrl.Log.WithName("test"), metrics: m}
 
 			result := r.correlateViolationsToWNPs(
-				t.Context(), []violation.Observation{tt.obs}, fx.ownedIndex, fx.wnpByKey)
+				t.Context(), []violation.Observation{tt.obs}, fx.ownedIndex, fx.wnpByKey,
+				duplicateTargets(fx.wnpByKey))
 
 			records := result[wnpKey("frontend-egress")]
 			require.Len(t, records, 1)

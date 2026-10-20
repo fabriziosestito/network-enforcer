@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
+	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
 func TestTargetMismatchPrecedesSiblingOverlap(t *testing.T) {
@@ -191,6 +192,7 @@ func TestRetainedPolicyScopeReadFailure(t *testing.T) {
 				{Type: conditionReady, Status: metav1.ConditionTrue, Reason: reasonSelectorScopeValid},
 			}
 			r.Client = fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(wnp, target).
+				WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 				WithStatusSubresource(wnp).WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					switch obj.(type) {

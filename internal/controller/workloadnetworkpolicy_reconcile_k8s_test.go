@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
+	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
 func assertNetworkPolicy(t *testing.T, expected, current *networkingv1.NetworkPolicy) {
@@ -37,12 +38,14 @@ func newTestWNPreconciler(t *testing.T, objs ...client.Object) *WorkloadNetworkP
 	require.NoError(t, istiosecurityv1.AddToScheme(scheme))
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithStatusSubresource(&securityv1alpha1.WorkloadNetworkPolicy{}).Build()
 
 	return &WorkloadNetworkPolicyReconciler{
 		Client:           cl,
 		Scheme:           scheme,
 		selectorOverlaps: newSelectorOverlapsCounter(),
+		duplicateTargets: newDuplicateTargetsCounter(),
 	}
 }
 
