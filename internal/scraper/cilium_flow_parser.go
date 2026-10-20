@@ -54,7 +54,7 @@ func handleNoWorkload(endpoint *hubbleObserver.Endpoint) (*securityv1alpha1.Work
 	}
 
 	// in case of host connections or connections to the api server we usually don't have a workload associated.
-	// For now we will skip those cases.
+	// Learning skips those cases; a violation keeps such a peer by its IP.
 	// Examples:
 	// "source":{"identity":1,"labels":["reserved:host"]}
 	// "source":{"identity":1,"labels":["reserved:host","reserved:kube-apiserver"]}
@@ -135,6 +135,43 @@ func shouldSkipWorkload(workload *securityv1alpha1.WorkloadRef) bool {
 	return !workload.IsSupported() && workload.OwnerKind != securityv1alpha1.WorkloadKindPod
 }
 
+// ciliumWorkloadRef parses a flow endpoint. skip reports that the endpoint has
+// no supported workload (none at all, e.g. reserved:world, or an unsupported
+// kind); ref is then nil when the endpoint has no workload.
+func ciliumWorkloadRef(endpoint *hubbleObserver.Endpoint) (*securityv1alpha1.WorkloadRef, bool, error) {
+	ref, err := fromEndpointToWorkloadRef(endpoint)
+	if errors.Is(err, errEndpointHasNoWorkload) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return ref, shouldSkipWorkload(ref), nil
+}
+
+// ciliumViolationEndpoints applies the violation rule to a dropped flow's
+// endpoints: the subject (source for egress, destination for ingress) must be a
+// workload, while a peer without one (e.g. reserved:world) is kept by its IP so
+// violations with an off-cluster peer are still recorded. It reports false when
+// the subject is not a workload.
+func ciliumViolationEndpoints(
+	flow *flowpb.Flow,
+	direction networkingv1.PolicyType,
+	source *securityv1alpha1.WorkloadRef, skipSource bool,
+	dest *securityv1alpha1.WorkloadRef, skipDest bool,
+) (*securityv1alpha1.WorkloadRef, *securityv1alpha1.WorkloadRef, bool) {
+	if direction == networkingv1.PolicyTypeEgress {
+		if dest == nil {
+			dest = &securityv1alpha1.WorkloadRef{OwnerName: flow.GetIP().GetDestination()}
+		}
+		return source, dest, !skipSource
+	}
+	if source == nil {
+		source = &securityv1alpha1.WorkloadRef{OwnerName: flow.GetIP().GetSource()}
+	}
+	return source, dest, !skipDest
+}
+
 func parseCiliumFlowResponse(flow *flowpb.Flow) processFlowResult {
 	if discardFlow(flow) {
 		return processFlowSkip()
@@ -148,26 +185,13 @@ func parseCiliumFlowResponse(flow *flowpb.Flow) processFlowResult {
 		return processFlowError(err)
 	}
 
-	sourceWorkload, err := fromEndpointToWorkloadRef(flow.GetSource())
+	sourceWorkload, skipSource, err := ciliumWorkloadRef(flow.GetSource())
 	if err != nil {
-		if errors.Is(err, errEndpointHasNoWorkload) {
-			return processFlowSkip()
-		}
 		return processFlowError(fmt.Errorf("cannot get source workload: %w", err))
 	}
-	if shouldSkipWorkload(sourceWorkload) {
-		return processFlowSkip()
-	}
-
-	destWorkload, err := fromEndpointToWorkloadRef(flow.GetDestination())
+	destWorkload, skipDest, err := ciliumWorkloadRef(flow.GetDestination())
 	if err != nil {
-		if errors.Is(err, errEndpointHasNoWorkload) {
-			return processFlowSkip()
-		}
 		return processFlowError(fmt.Errorf("cannot get destination workload: %w", err))
-	}
-	if shouldSkipWorkload(destWorkload) {
-		return processFlowSkip()
 	}
 
 	if flow.GetVerdict() == hubbleObserver.Verdict_DROPPED {
@@ -193,12 +217,18 @@ func parseCiliumFlowResponse(flow *flowpb.Flow) processFlowResult {
 			direction = networkingv1.PolicyTypeEgress
 		}
 
+		source, dest, ok := ciliumViolationEndpoints(
+			flow, direction, sourceWorkload, skipSource, destWorkload, skipDest)
+		if !ok {
+			return processFlowSkip()
+		}
+
 		observation := violation.Observation{
 			Provider:  securityv1alpha1.PolicyBackendKubernetes,
 			Direction: direction,
 			Timestamp: violationTimestamp(flow),
-			Source:    *sourceWorkload,
-			Dest:      *destWorkload,
+			Source:    *source,
+			Dest:      *dest,
 			Protocol:  proto,
 			DstPort:   dstPort,
 			Action:    securityv1alpha1.WorkloadNetworkPolicyModeProtect,
@@ -211,6 +241,9 @@ func parseCiliumFlowResponse(flow *flowpb.Flow) processFlowResult {
 		return processFlowRecordViolation(observation)
 	}
 
+	if skipSource || skipDest {
+		return processFlowSkip()
+	}
 	return processFlowEnqueue(types.LearningEvent{
 		Source:   sourceWorkload,
 		Dest:     destWorkload,

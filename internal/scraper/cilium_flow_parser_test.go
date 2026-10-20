@@ -33,6 +33,11 @@ func flowResponse(flow *flowpb.Flow) *hubbleObserver.GetFlowsResponse {
 	}
 }
 
+// worldEndpoint is how Hubble reports an off-cluster endpoint.
+func worldEndpoint() *hubbleObserver.Endpoint {
+	return &hubbleObserver.Endpoint{Identity: 2, Labels: []string{"reserved:world"}}
+}
+
 func testProcessFlowOutcomeError() processFlowResult {
 	return processFlowResult{
 		outcome: processFlowOutcomeError,
@@ -580,6 +585,90 @@ func TestProcessFlowResolvesSelectorsWithFakeClient(t *testing.T) {
 				DenyingPolicyNamespace: defaultCiliumTestNamespace,
 				DenyingPolicyName:      sourcePolicyName,
 			}),
+		},
+		{
+			// The destination is off-cluster (reserved:world): the violation is
+			// kept with the peer recorded by its IP, attributed to the source.
+			name: "dropped_egress_flow_to_off_cluster_peer_keeps_violation",
+			flow: flowResponse(&flowpb.Flow{
+				Time:             timestamppb.New(flowTimestamp),
+				Verdict:          flowpb.Verdict_DROPPED,
+				DropReasonDesc:   hubbleObserver.DropReason_POLICY_DENIED,
+				TrafficDirection: hubbleObserver.TrafficDirection_EGRESS,
+				IP:               &flowpb.IP{Source: "10.244.0.9", Destination: "203.0.113.10"},
+				L4:               &flowpb.Layer4{Protocol: &flowpb.Layer4_TCP{TCP: &flowpb.TCP{DestinationPort: 443}}},
+				Source: &hubbleObserver.Endpoint{
+					Namespace: defaultCiliumTestNamespace,
+					Workloads: []*flowpb.Workload{{Name: "source-deploy", Kind: "Deployment"}},
+				},
+				Destination: worldEndpoint(),
+			}),
+			processFlowResult: processFlowRecordViolation(violation.Observation{
+				Provider:  securityv1alpha1.PolicyBackendKubernetes,
+				Direction: networkingv1.PolicyTypeEgress,
+				Timestamp: metav1.NewTime(flowTimestamp),
+				Source: securityv1alpha1.WorkloadRef{
+					Namespace: defaultCiliumTestNamespace,
+					OwnerName: "source-deploy",
+					OwnerKind: securityv1alpha1.WorkloadKindDeployment,
+					Selector:  sourceSelector,
+				},
+				Dest:                   securityv1alpha1.WorkloadRef{OwnerName: "203.0.113.10"},
+				Protocol:               corev1.ProtocolTCP,
+				DstPort:                443,
+				Action:                 securityv1alpha1.WorkloadNetworkPolicyModeProtect,
+				DenyingPolicyNamespace: defaultCiliumTestNamespace,
+				DenyingPolicyName:      sourcePolicyName,
+			}),
+		},
+		{
+			name: "dropped_ingress_flow_from_off_cluster_peer_keeps_violation",
+			flow: flowResponse(&flowpb.Flow{
+				Time:             timestamppb.New(flowTimestamp),
+				Verdict:          flowpb.Verdict_DROPPED,
+				DropReasonDesc:   hubbleObserver.DropReason_POLICY_DENIED,
+				TrafficDirection: hubbleObserver.TrafficDirection_INGRESS,
+				IP:               &flowpb.IP{Source: "203.0.113.10", Destination: "10.244.0.12"},
+				L4:               &flowpb.Layer4{Protocol: &flowpb.Layer4_TCP{TCP: &flowpb.TCP{DestinationPort: 8080}}},
+				Source:           worldEndpoint(),
+				Destination: &hubbleObserver.Endpoint{
+					Namespace: defaultCiliumTestNamespace,
+					Workloads: []*flowpb.Workload{{Name: "dest-deploy", Kind: "Deployment"}},
+				},
+			}),
+			processFlowResult: processFlowRecordViolation(violation.Observation{
+				Provider:  securityv1alpha1.PolicyBackendKubernetes,
+				Direction: networkingv1.PolicyTypeIngress,
+				Timestamp: metav1.NewTime(flowTimestamp),
+				Source:    securityv1alpha1.WorkloadRef{OwnerName: "203.0.113.10"},
+				Dest: securityv1alpha1.WorkloadRef{
+					Namespace: defaultCiliumTestNamespace,
+					OwnerName: "dest-deploy",
+					OwnerKind: securityv1alpha1.WorkloadKindDeployment,
+					Selector:  dstSelector,
+				},
+				Protocol:               corev1.ProtocolTCP,
+				DstPort:                8080,
+				Action:                 securityv1alpha1.WorkloadNetworkPolicyModeProtect,
+				DenyingPolicyNamespace: defaultCiliumTestNamespace,
+				DenyingPolicyName:      dstPolicyName,
+			}),
+		},
+		{
+			// The subject of an egress drop must be a workload.
+			name: "dropped_egress_flow_from_off_cluster_source_is_skipped",
+			flow: flowResponse(&flowpb.Flow{
+				Verdict:          flowpb.Verdict_DROPPED,
+				DropReasonDesc:   hubbleObserver.DropReason_POLICY_DENIED,
+				TrafficDirection: hubbleObserver.TrafficDirection_EGRESS,
+				L4:               &flowpb.Layer4{Protocol: &flowpb.Layer4_TCP{TCP: &flowpb.TCP{DestinationPort: 8080}}},
+				Source:           worldEndpoint(),
+				Destination: &hubbleObserver.Endpoint{
+					Namespace: defaultCiliumTestNamespace,
+					Workloads: []*flowpb.Workload{{Name: "dest-deploy", Kind: "Deployment"}},
+				},
+			}),
+			processFlowResult: processFlowSkip(),
 		},
 		{
 			name: "missing_dst_selector",

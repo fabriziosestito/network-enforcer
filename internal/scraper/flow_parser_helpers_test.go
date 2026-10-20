@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -226,6 +227,76 @@ func TestUnattributedFlowViolationReachesStatusSync(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return gatheredCounter(reg, unattributedMetric, map[string]string{"reason": "no_target_policy"}) == 1 &&
 			gatheredCounter(reg, unattributedMetric, map[string]string{"reason": "duplicate_target_policy"}) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
+// TestOffClusterPeerViolationReachesStatus is a scraper-to-sync regression: a
+// dropped egress flow to an off-cluster destination (reserved:world) must be
+// parsed, resolved and attributed to the source's WorkloadNetworkPolicy, with
+// the peer recorded by its IP.
+func TestOffClusterPeerViolationReachesStatus(t *testing.T) {
+	t.Parallel()
+
+	const ns = defaultCiliumTestNamespace
+	selector := metav1.LabelSelector{MatchLabels: map[string]string{"app": "client"}}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, securityv1alpha1.AddToScheme(scheme))
+
+	wnp := &securityv1alpha1.WorkloadNetworkPolicy{
+		Name: "client-egress", Namespace: ns,
+		Spec: securityv1alpha1.WorkloadNetworkPolicySpec{
+			PolicyBackendSpec: securityv1alpha1.PolicyBackendSpec{
+				Backend: securityv1alpha1.PolicyBackendKubernetes,
+				Kubernetes: &networkingv1.NetworkPolicySpec{
+					PodSelector: selector,
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+				},
+			},
+			WorkloadTargetingSpec: securityv1alpha1.WorkloadTargetingSpec{
+				TargetRef: deploymentTarget("client"),
+				Direction: networkingv1.PolicyTypeEgress,
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
+		WithStatusSubresource(&securityv1alpha1.WorkloadNetworkPolicy{}).
+		WithObjects(
+			&appsv1.Deployment{Name: "client", Namespace: ns, Spec: appsv1.DeploymentSpec{Selector: &selector}},
+			wnp,
+		).
+		Build()
+
+	s := NewCiliumScraper(CiliumScraperConfig{Client: cl, Logger: testutil.NewTestLogger(t)})
+	result := s.processFlow(t.Context(), flowResponse(&flowpb.Flow{
+		Verdict:          flowpb.Verdict_DROPPED,
+		DropReasonDesc:   hubbleObserver.DropReason_POLICY_DENIED,
+		TrafficDirection: hubbleObserver.TrafficDirection_EGRESS,
+		IP:               &flowpb.IP{Source: "10.244.0.9", Destination: "203.0.113.10"},
+		L4:               &flowpb.Layer4{Protocol: &flowpb.Layer4_TCP{TCP: &flowpb.TCP{DestinationPort: 443}}},
+		Source: &hubbleObserver.Endpoint{
+			Namespace: ns,
+			Workloads: []*flowpb.Workload{{Name: "client", Kind: "Deployment"}},
+		},
+		Destination: worldEndpoint(),
+	}))
+	require.Equal(t, processFlowOutcomeViolation, result.outcome)
+
+	buffer := ringbuf.New[violation.Observation]()
+	buffer.Record(result.observation)
+	startStatusSync(t, cl, buffer)
+
+	require.Eventually(t, func() bool {
+		var got securityv1alpha1.WorkloadNetworkPolicy
+		if cl.Get(context.Background(), wnp.NamespacedName(), &got) != nil || len(got.Status.Violations) != 1 {
+			return false
+		}
+		return reflect.DeepEqual(got.Status.Violations[0].Dest, securityv1alpha1.WorkloadRef{OwnerName: "203.0.113.10"})
 	}, 5*time.Second, 20*time.Millisecond)
 }
 

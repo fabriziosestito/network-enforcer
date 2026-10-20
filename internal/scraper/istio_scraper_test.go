@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -683,23 +684,32 @@ func TestExportReportedPolicyOfOtherWorkloadCountsDisagreement(t *testing.T) {
 		}
 	}
 
+	// ownedAP is the AuthorizationPolicy the controller renders for wnp.
+	ownedAP := func(wnp *securityv1alpha1.WorkloadNetworkPolicy) *istiosecurityv1.AuthorizationPolicy {
+		return &istiosecurityv1.AuthorizationPolicy{
+			Name:      wnp.Name,
+			Namespace: wnp.Namespace,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+				wnp, securityv1alpha1.GroupVersion.WithKind(securityv1alpha1.WorkloadNetworkPolicyKind))},
+		}
+	}
+	serverWNP := ingressWNP("allow-http-server", "http-server")
+	canaryWNP := ingressWNP("allow-http-canary", "http-canary")
+
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, appsv1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
 	require.NoError(t, securityv1alpha1.AddToScheme(scheme))
-	// http-canary's WNP selects the http-server pods too, so ztunnel reports it
-	// for traffic whose subject is Deployment/http-server.
+	require.NoError(t, istiosecurityv1.AddToScheme(scheme))
+	// http-canary's WNP selects the http-server pods too, so ztunnel reports its
+	// AuthorizationPolicy for traffic whose subject is Deployment/http-server.
 	cl := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithIndex(&corev1.Pod{}, istio.PodIPIndexField, istio.IndexPodByIP).
 		WithIndex(&securityv1alpha1.WorkloadNetworkPolicy{}, workload.WNPTargetIndexField, workload.IndexWNPByTarget).
 		WithStatusSubresource(&securityv1alpha1.WorkloadNetworkPolicy{}).
-		WithObjects(
-			dstPod,
-			ingressWNP("allow-http-server", "http-server"),
-			ingressWNP("allow-http-canary", "http-canary"),
-		).
+		WithObjects(dstPod, serverWNP, canaryWNP, ownedAP(serverWNP), ownedAP(canaryWNP)).
 		Build()
 
 	buffer := ringbuf.New[violation.Observation]()
@@ -729,9 +739,8 @@ func TestExportReportedPolicyOfOtherWorkloadCountsDisagreement(t *testing.T) {
 			gatheredCounter(reg, disagreementMetric, map[string]string{"provider": "istio"}) == 1
 	}, 5*time.Second, 20*time.Millisecond)
 
-	var canaryWNP securityv1alpha1.WorkloadNetworkPolicy
-	require.NoError(t, cl.Get(context.Background(),
-		k8stypes.NamespacedName{Namespace: "default", Name: "allow-http-canary"}, &canaryWNP))
-	require.Empty(t, canaryWNP.Status.Violations, "the reported policy's WNP must not get the violation")
+	var canary securityv1alpha1.WorkloadNetworkPolicy
+	require.NoError(t, cl.Get(context.Background(), canaryWNP.NamespacedName(), &canary))
+	require.Empty(t, canary.Status.Violations, "the reported policy's WNP must not get the violation")
 	require.Zero(t, gatheredCounter(reg, unattributedMetric, map[string]string{"provider": "istio"}))
 }

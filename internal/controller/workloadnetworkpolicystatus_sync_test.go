@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,16 +77,19 @@ func newAttributionObservation(
 //
 //   - frontend-egress   targets Deployment/frontend Egress, renders NetworkPolicies
 //     frontend-egress and renamed-np (both controlled by it).
-//   - frontend-ingress  targets Deployment/frontend Ingress, no NetworkPolicy.
+//   - frontend-ingress  targets Deployment/frontend Ingress, no NetworkPolicy. A
+//     foreign AuthorizationPolicy also named frontend-ingress exists that no WNP
+//     controls.
 //   - backend-ingress   targets Deployment/backend Ingress, no NetworkPolicy
 //     (monitor mode, or an Istio AuthorizationPolicy with the WNP name).
 //   - canary-egress     targets Deployment/canary Egress, renders NetworkPolicy
 //     canary-egress. Its selector overlapping frontend's is what makes the data
 //     plane report it for frontend traffic.
 //   - dup-a, dup-b      both target Deployment/dup Egress.
-//   - web-ingress       targets Deployment/web Ingress. A NetworkPolicy also
-//     named web-ingress exists, but is owned by canary-egress: it must not be
-//     mistaken for web-ingress's AuthorizationPolicy in an Istio report.
+//   - web-ingress       targets Deployment/web Ingress, renders AuthorizationPolicy
+//     web-ingress. A NetworkPolicy also named web-ingress exists, but is owned by
+//     canary-egress: it must not be mistaken for web-ingress's
+//     AuthorizationPolicy in an Istio report.
 //   - foreign-np        a NetworkPolicy not managed by any WNP.
 //
 // Deployment/orphan has no WNP at all.
@@ -111,12 +115,20 @@ func newAttributionFixture(t *testing.T) attributionFixture {
 	namesakeNP := newOwnedNetworkPolicy(canaryEgress)
 	namesakeNP.Name = webIngress.Name
 	foreignNP := &networkingv1.NetworkPolicy{Name: "foreign-np", Namespace: attributionTestNS}
+	webAP := &istiosecurityv1.AuthorizationPolicy{
+		Name:      webIngress.Name,
+		Namespace: attributionTestNS,
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+			webIngress, securityv1alpha1.GroupVersion.WithKind(securityv1alpha1.WorkloadNetworkPolicyKind))},
+	}
+	foreignAP := &istiosecurityv1.AuthorizationPolicy{Name: frontendIngress.Name, Namespace: attributionTestNS}
 
 	wnps := []*securityv1alpha1.WorkloadNetworkPolicy{
 		frontendEgress, frontendIngress, backendIngress, canaryEgress, dupA, dupB, webIngress,
 	}
 	objs := []client.Object{
 		newOwnedNetworkPolicy(frontendEgress), renamedNP, newOwnedNetworkPolicy(canaryEgress), namesakeNP, foreignNP,
+		webAP, foreignAP,
 	}
 	wnpByKey := make(map[types.NamespacedName]*securityv1alpha1.WorkloadNetworkPolicy, len(wnps))
 	for _, wnp := range wnps {
@@ -150,6 +162,8 @@ func TestAttributeViolation(t *testing.T) {
 	frontend, backend := deploymentRef("frontend"), deploymentRef("backend")
 	webIstioReport := newAttributionObservation(ingress, frontend, deploymentRef("web"), "web-ingress")
 	webIstioReport.Provider = securityv1alpha1.PolicyBackendIstio
+	foreignIstioReport := newAttributionObservation(ingress, backend, frontend, "frontend-ingress")
+	foreignIstioReport.Provider = securityv1alpha1.PolicyBackendIstio
 
 	tests := []struct {
 		name string
@@ -180,7 +194,7 @@ func TestAttributeViolation(t *testing.T) {
 			wantWNP: "backend-ingress",
 		},
 		{
-			// The reported AuthorizationPolicy is resolved by WNP name; a
+			// The reported AuthorizationPolicy is controlled by web-ingress; a
 			// NetworkPolicy sharing its name but owned by canary-egress must not be
 			// taken as its owner (that would count a false disagreement).
 			name:    "istio_report_ignores_namesake_networkpolicy",
@@ -188,6 +202,14 @@ func TestAttributeViolation(t *testing.T) {
 			wantWNP: "web-ingress",
 		},
 		// Step 2: targetRef index.
+		{
+			// A foreign AuthorizationPolicy sharing a WNP's name is not trusted by
+			// name alone: the targetRef index decides.
+			name:       "istio_report_of_unowned_authorizationpolicy",
+			obs:        foreignIstioReport,
+			wantWNP:    "frontend-ingress",
+			wantLookup: true,
+		},
 		{
 			name:       "no_reported_policy",
 			obs:        newAttributionObservation(egress, frontend, backend, ""),
