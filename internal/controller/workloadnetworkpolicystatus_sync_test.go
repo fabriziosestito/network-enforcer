@@ -179,27 +179,31 @@ func TestAttributeViolation(t *testing.T) {
 	}{
 		// Step 1: reported enforcing object, verified.
 		{
-			name:    "reported_networkpolicy_owned_by_wnp_targeting_subject",
-			obs:     newAttributionObservation(egress, frontend, backend, "frontend-egress"),
-			wantWNP: "frontend-egress",
+			name:       "reported_networkpolicy_owned_by_wnp_targeting_subject",
+			obs:        newAttributionObservation(egress, frontend, backend, "frontend-egress"),
+			wantWNP:    "frontend-egress",
+			wantLookup: true,
 		},
 		{
-			name:    "reported_networkpolicy_attributed_to_its_owner_not_its_name",
-			obs:     newAttributionObservation(egress, frontend, backend, "renamed-np"),
-			wantWNP: "frontend-egress",
+			name:       "reported_networkpolicy_attributed_to_its_owner_not_its_name",
+			obs:        newAttributionObservation(egress, frontend, backend, "renamed-np"),
+			wantWNP:    "frontend-egress",
+			wantLookup: true,
 		},
 		{
-			name:    "reported_wnp_without_backing_networkpolicy",
-			obs:     newAttributionObservation(ingress, frontend, backend, "backend-ingress"),
-			wantWNP: "backend-ingress",
+			name:       "reported_wnp_without_backing_networkpolicy",
+			obs:        newAttributionObservation(ingress, frontend, backend, "backend-ingress"),
+			wantWNP:    "backend-ingress",
+			wantLookup: true,
 		},
 		{
 			// The reported AuthorizationPolicy is controlled by web-ingress; a
 			// NetworkPolicy sharing its name but owned by canary-egress must not be
 			// taken as its owner (that would count a false disagreement).
-			name:    "istio_report_ignores_namesake_networkpolicy",
-			obs:     webIstioReport,
-			wantWNP: "web-ingress",
+			name:       "istio_report_ignores_namesake_networkpolicy",
+			obs:        webIstioReport,
+			wantWNP:    "web-ingress",
+			wantLookup: true,
 		},
 		// Step 2: targetRef index.
 		{
@@ -273,6 +277,15 @@ func TestAttributeViolation(t *testing.T) {
 			name:       "reported_policy_duplicate_wnps_target_subject",
 			obs:        newAttributionObservation(egress, deploymentRef("dup"), backend, "dup-a"),
 			wantReason: unattributedReasonDuplicateTargetPolicy,
+		},
+		{
+			// The snapshot hides one duplicate, so only the current target
+			// lookup can tell the reported owner is still conflicted.
+			name:                "reported_policy_duplicate_wnps_only_in_cache",
+			obs:                 newAttributionObservation(egress, deploymentRef("dup"), backend, "dup-a"),
+			excludeFromSnapshot: "dup-b",
+			wantReason:          unattributedReasonDuplicateTargetPolicy,
+			wantLookup:          true,
 		},
 		{
 			name:       "targetref_lookup_fails",

@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	reasonDuplicateTarget      = "DuplicateTarget"
-	minDuplicateTargetPolicies = 2
+	reasonDuplicateTarget            = "DuplicateTarget"
+	minDuplicateTargetPolicies       = 2
+	maxDuplicateTargetNamesInMessage = 16
 )
 
 type duplicateTargetConflict struct {
@@ -73,6 +74,15 @@ func (r *WorkloadNetworkPolicyReconciler) checkDuplicateTarget(
 		names = append(names, wnpList.Items[i].Name)
 	}
 	slices.Sort(names)
+	omitted := 0
+	if len(names) > maxDuplicateTargetNamesInMessage {
+		omitted = len(names) - maxDuplicateTargetNamesInMessage
+		names = names[:maxDuplicateTargetNamesInMessage]
+	}
+	listedNames := strings.Join(names, ", ")
+	if omitted > 0 {
+		listedNames = fmt.Sprintf("%s, and %d more", listedNames, omitted)
+	}
 
 	return duplicateTargetConflict{
 		condition: metav1.Condition{
@@ -83,7 +93,7 @@ func (r *WorkloadNetworkPolicyReconciler) checkDuplicateTarget(
 			Message: fmt.Sprintf(
 				"%s %s/%s %s is targeted by %d WorkloadNetworkPolicies (%s); only the oldest, %s, renders a policy",
 				ref.Kind, wnp.Namespace, ref.Name, wnp.Spec.Direction,
-				len(wnpList.Items), strings.Join(names, ", "), oldest.Name,
+				len(wnpList.Items), listedNames, oldest.Name,
 			),
 		},
 		winner: oldest.Name == wnp.Name,

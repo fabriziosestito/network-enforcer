@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +198,35 @@ func TestDuplicateTargetHandlerEnqueuesOldAndNewSiblings(t *testing.T) {
 		oldSibling.NamespacedName(): true,
 		newSibling.NamespacedName(): true,
 	}, got)
+}
+
+func TestDuplicateTargetMessageBounded(t *testing.T) {
+	t.Parallel()
+
+	const policyCount = 130
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	objs := make([]client.Object, 0, policyCount)
+	var first *securityv1alpha1.WorkloadNetworkPolicy
+	for i := range policyCount {
+		wnp := duplicateScopePolicy(
+			fmt.Sprintf("policy-%03d-%s", i, strings.Repeat("a", 240)),
+			created,
+		)
+		if i == 0 {
+			first = wnp
+		}
+		objs = append(objs, wnp)
+	}
+
+	r := newTestWNPreconciler(t, objs...)
+	conflict, conflicting, err := r.checkDuplicateTarget(t.Context(), first)
+	require.NoError(t, err)
+	require.True(t, conflicting)
+	require.LessOrEqual(t, len(conflict.condition.Message), 32768)
+	require.Contains(t, conflict.condition.Message,
+		fmt.Sprintf("targeted by %d WorkloadNetworkPolicies", policyCount))
+	require.Contains(t, conflict.condition.Message,
+		fmt.Sprintf("and %d more", policyCount-maxDuplicateTargetNamesInMessage))
 }
 
 func TestDuplicateTargetDirectionIsolation(t *testing.T) {

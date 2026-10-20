@@ -264,19 +264,8 @@ func (r *WorkloadNetworkPolicyStatusSync) attributeViolation(
 	}
 
 	if reportedWNP, ok := r.reportedOwningWNP(ctx, obs, ownedIndex, wnpByKey); ok && hasSubject {
-		targetsSubject := reportedWNP.Namespace == subject.Namespace &&
-			reportedWNP.Spec.TargetRef.Kind == subject.OwnerKind &&
-			reportedWNP.Spec.TargetRef.Name == subject.OwnerName
-		if !targetsSubject {
-			r.metrics.recordDisagreement(obs)
-			r.logger.Info("Reported policy is owned by a WorkloadNetworkPolicy targeting another workload, "+
-				"attributing violation to the subject; pod selectors likely overlap",
-				"reportedPolicyNamespace", obs.DenyingPolicyNamespace,
-				"reportedPolicyName", obs.DenyingPolicyName,
-				"owningPolicy", reportedWNP.NamespacedName().String(),
-				"subject", subject)
-		} else if reportedWNP.Spec.Direction == obs.Direction {
-			return reportedWNP.NamespacedName(), ""
+		if wnpKey, reason, resolved := r.attributeReportedPolicy(ctx, obs, reportedWNP, subject); resolved {
+			return wnpKey, reason
 		}
 	}
 
@@ -303,6 +292,65 @@ func (r *WorkloadNetworkPolicyStatusSync) attributeViolation(
 		return types.NamespacedName{}, unattributedReasonNoTargetPolicy
 	}
 	return wnpKey, ""
+}
+
+// attributeReportedPolicy resolves the violation from the enforcing object
+// reported by the data plane. It reports false when the reported owner does
+// not target the subject in the observed direction, so attribution falls back
+// to the targetRef lookup.
+func (r *WorkloadNetworkPolicyStatusSync) attributeReportedPolicy(
+	ctx context.Context,
+	obs violation.Observation,
+	reportedWNP *securityv1alpha1.WorkloadNetworkPolicy,
+	subject securityv1alpha1.WorkloadRef,
+) (types.NamespacedName, string, bool) {
+	targetsSubject := reportedWNP.Namespace == subject.Namespace &&
+		reportedWNP.Spec.TargetRef.Kind == subject.OwnerKind &&
+		reportedWNP.Spec.TargetRef.Name == subject.OwnerName
+	if !targetsSubject {
+		r.metrics.recordDisagreement(obs)
+		r.logger.Info("Reported policy is owned by a WorkloadNetworkPolicy targeting another workload, "+
+			"attributing violation to the subject; pod selectors likely overlap",
+			"reportedPolicyNamespace", obs.DenyingPolicyNamespace,
+			"reportedPolicyName", obs.DenyingPolicyName,
+			"owningPolicy", reportedWNP.NamespacedName().String(),
+			"subject", subject)
+		return types.NamespacedName{}, "", false
+	}
+	if reportedWNP.Spec.Direction != obs.Direction {
+		return types.NamespacedName{}, "", false
+	}
+
+	duplicated, err := r.targetDuplicated(ctx, subject, obs.Direction)
+	if err != nil {
+		r.logger.Error(err, "Failed to verify WorkloadNetworkPolicy uniqueness", "subject", subject)
+	}
+	if duplicated {
+		return types.NamespacedName{}, unattributedReasonDuplicateTargetPolicy, true
+	}
+	return reportedWNP.NamespacedName(), "", true
+}
+
+// targetDuplicated reports whether the cache currently holds more than one
+// WNP targeting the subject workload in the given direction.
+func (r *WorkloadNetworkPolicyStatusSync) targetDuplicated(
+	ctx context.Context,
+	subject securityv1alpha1.WorkloadRef,
+	direction networkingv1.PolicyType,
+) (bool, error) {
+	_, err := workload.LookupWNPByTarget(
+		ctx, r.Client, subject.Namespace, subject.OwnerKind, subject.OwnerName, direction,
+	)
+	switch {
+	case errors.Is(err, workload.ErrDuplicateTarget):
+		return true, nil
+	case errors.Is(err, workload.ErrTargetNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return false, nil
+	}
 }
 
 // wnpTarget identifies a (namespace, targetRef, direction) tuple.
