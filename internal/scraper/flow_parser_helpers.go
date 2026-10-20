@@ -128,31 +128,28 @@ func resolveParsedFlow(
 	c client.Reader,
 	parsed processFlowResult,
 ) processFlowResult {
-	var source *securityv1alpha1.WorkloadRef
-	var dest *securityv1alpha1.WorkloadRef
 	switch parsed.outcome {
 	case processFlowOutcomeEnqueue:
-		source = parsed.event.Source
-		dest = parsed.event.Dest
+		if err := resolveWorkload(ctx, parsed.event.Source); err != nil {
+			return resolveOutcome("source", err)
+		}
+		if err := resolveWorkload(ctx, parsed.event.Dest); err != nil {
+			return resolveOutcome("destination", err)
+		}
 	case processFlowOutcomeViolation:
-		source = &parsed.observation.Source
-		dest = &parsed.observation.Dest
-	case processFlowOutcomeError, processFlowOutcomeSkip:
-		fallthrough
-	default:
-		return parsed
-	}
-
-	if err := resolveWorkload(ctx, source); err != nil {
-		return resolveOutcome("source", err)
-	}
-	if err := resolveWorkload(ctx, dest); err != nil {
-		return resolveOutcome("destination", err)
-	}
-
-	// in case of learning event there are no other things to do.
-	if parsed.outcome == processFlowOutcomeViolation {
+		// The subject (the workload the policy selects) must resolve. The peer is
+		// resolved best-effort: an off-cluster or unresolvable peer keeps its raw
+		// value so the violation is still recorded.
+		subject, subjectRole, peer := &parsed.observation.Source, "source", &parsed.observation.Dest
+		if parsed.observation.Direction == networkingv1.PolicyTypeIngress {
+			subject, subjectRole, peer = &parsed.observation.Dest, "destination", &parsed.observation.Source
+		}
+		if err := resolveWorkload(ctx, subject); err != nil {
+			return resolveOutcome(subjectRole, err)
+		}
+		_ = resolveWorkload(ctx, peer)
 		resolveViolationDenyingPolicy(ctx, c, &parsed.observation)
+	case processFlowOutcomeError, processFlowOutcomeSkip:
 	}
 
 	return parsed

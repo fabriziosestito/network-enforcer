@@ -20,6 +20,27 @@ import (
 	"github.com/kubewarden/network-enforcer/internal/workload"
 )
 
+// calicoEndpoint is one end of a Goldmane flow key.
+type calicoEndpoint struct {
+	kind            pb.EndpointType
+	name, namespace string
+}
+
+func (e calicoEndpoint) isWorkload() bool {
+	return e.kind == pb.EndpointType_WorkloadEndpoint && e.name != "" && e.namespace != ""
+}
+
+// isViolationPeer reports whether the endpoint can be recorded as the peer of a
+// violation: a workload, or an off-cluster address (a NetworkSet or a Network).
+func (e calicoEndpoint) isViolationPeer() bool {
+	switch e.kind { //nolint:exhaustive // host endpoints are not recorded
+	case pb.EndpointType_NetworkSet, pb.EndpointType_Network:
+		return e.name != ""
+	default:
+		return e.isWorkload()
+	}
+}
+
 func parseCalicoFlow(flowResult *pb.FlowResult) processFlowResult {
 	if flowResult == nil {
 		return processFlowError(errors.New("found nil flow result"))
@@ -125,28 +146,27 @@ func discardCalicoFlow(key *pb.FlowKey) bool {
 	if key == nil {
 		return true
 	}
-	if key.GetSourceType() != pb.EndpointType_WorkloadEndpoint {
-		return true
-	}
-	if key.GetDestType() != pb.EndpointType_WorkloadEndpoint {
-		return true
-	}
-	if key.GetSourceName() == "" || key.GetSourceNamespace() == "" {
-		return true
-	}
-	if key.GetDestName() == "" || key.GetDestNamespace() == "" {
-		return true
-	}
 	port := key.GetDestPort()
 	if port < minValidPort || port > maxValidPort {
 		return true
 	}
+	source := calicoEndpoint{key.GetSourceType(), key.GetSourceName(), key.GetSourceNamespace()}
+	dest := calicoEndpoint{key.GetDestType(), key.GetDestName(), key.GetDestNamespace()}
 	switch key.GetAction() { //nolint:exhaustive // Pass and unspecified are unused
 	case pb.Action_Allow:
 		// Only destination-reported allows are used for learning to avoid duplicates.
-		return key.GetReporter() != pb.Reporter_Dst
+		return key.GetReporter() != pb.Reporter_Dst || !source.isWorkload() || !dest.isWorkload()
 	case pb.Action_Deny:
-		return key.GetReporter() != pb.Reporter_Src && key.GetReporter() != pb.Reporter_Dst
+		// The reporter's side is the violation subject and must be a workload; the
+		// peer may also be off-cluster.
+		switch key.GetReporter() { //nolint:exhaustive // only Src/Dst map to policy directions
+		case pb.Reporter_Src:
+			return !source.isWorkload() || !dest.isViolationPeer()
+		case pb.Reporter_Dst:
+			return !dest.isWorkload() || !source.isViolationPeer()
+		default:
+			return true
+		}
 	default:
 		return true
 	}

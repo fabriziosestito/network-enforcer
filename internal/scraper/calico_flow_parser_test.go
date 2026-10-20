@@ -605,6 +605,58 @@ func TestProcessCalicoFlowResolvesWorkloadsWithFakeClient(t *testing.T) {
 			}),
 		},
 		{
+			// The destination is off-cluster (public network): the violation is
+			// kept with the peer recorded by its Goldmane name.
+			name: "deny_egress_to_off_cluster_peer_keeps_violation",
+			flow: calicoFlowResult(func() *pb.FlowKey {
+				key := denySrcWorkloadKey()
+				key.DestType, key.DestName, key.DestNamespace = pb.EndpointType_Network, "pub", ""
+				return key
+			}()),
+			processFlowResult: processFlowRecordViolation(violation.Observation{
+				Provider:               securityv1alpha1.PolicyBackendKubernetes,
+				Direction:              networkingv1.PolicyTypeEgress,
+				Timestamp:              metav1.NewTime(calicoTestFlowTime()),
+				Source:                 *deploySource,
+				Dest:                   securityv1alpha1.WorkloadRef{OwnerName: "pub"},
+				Protocol:               corev1.ProtocolTCP,
+				DstPort:                18080,
+				Action:                 securityv1alpha1.WorkloadNetworkPolicyModeProtect,
+				DenyingPolicyNamespace: defaultCalicoTestNamespace,
+				DenyingPolicyName:      sourcePolicyName,
+			}),
+		},
+		{
+			name: "deny_ingress_from_off_cluster_peer_keeps_violation",
+			flow: calicoFlowResult(func() *pb.FlowKey {
+				key := denyDstWorkloadKey()
+				key.SourceType, key.SourceName, key.SourceNamespace = pb.EndpointType_Network, "pvt", ""
+				return key
+			}()),
+			processFlowResult: processFlowRecordViolation(violation.Observation{
+				Provider:               securityv1alpha1.PolicyBackendKubernetes,
+				Direction:              networkingv1.PolicyTypeIngress,
+				Timestamp:              metav1.NewTime(calicoTestFlowTime()),
+				Source:                 securityv1alpha1.WorkloadRef{OwnerName: "pvt"},
+				Dest:                   *deployDest,
+				Protocol:               corev1.ProtocolTCP,
+				DstPort:                18080,
+				Action:                 securityv1alpha1.WorkloadNetworkPolicyModeProtect,
+				DenyingPolicyNamespace: defaultCalicoTestNamespace,
+				DenyingPolicyName:      dstPolicyName,
+			}),
+		},
+		{
+			// The subject of an egress deny (the source) must be a workload.
+			name: "deny_egress_from_off_cluster_source_is_skipped",
+			flow: calicoFlowResult(func() *pb.FlowKey {
+				key := denySrcWorkloadKey()
+				key.SourceType, key.SourceName, key.SourceNamespace = pb.EndpointType_Network, "pub", ""
+				return key
+			}()),
+			processFlowResult: processFlowSkip(),
+		},
+		{
 			// No WNP targets the StatefulSet: the observation is kept with no
 			// policy so the controller can count it as unattributed.
 			name: "deny_egress_without_target_policy_keeps_violation",
