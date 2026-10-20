@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Merge images
-        uses: kubewarden/runtime-enforcer/.github/actions/merge-multiarch@9e6683e475f38058b5189f5e77b62cd15904cb0a
+        uses: kubewarden/runtime-enforcer/.github/actions/merge-multiarch@533c80ec6d0ef14b2fd840acbcd7d52196020856
         with:
           arch: amd64,arm64
           image: ${{ matrix.component }}
