@@ -245,6 +245,13 @@ func TestAttributeViolation(t *testing.T) {
 			wantWNP:    "frontend-egress",
 			wantLookup: true,
 		},
+		{
+			name:       "reported_policy_uniqueness_lookup_fails",
+			obs:        newAttributionObservation(egress, frontend, backend, "frontend-egress"),
+			failLookup: true,
+			wantReason: unattributedReasonLookupFailed,
+			wantLookup: true,
+		},
 		// Step 3: explicitly unattributed.
 		{
 			name:       "no_wnp_targets_subject",

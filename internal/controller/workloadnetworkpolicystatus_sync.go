@@ -324,6 +324,7 @@ func (r *WorkloadNetworkPolicyStatusSync) attributeReportedPolicy(
 	duplicated, err := r.targetDuplicated(ctx, subject, obs.Direction)
 	if err != nil {
 		r.logger.Error(err, "Failed to verify WorkloadNetworkPolicy uniqueness", "subject", subject)
+		return types.NamespacedName{}, unattributedReasonLookupFailed, true
 	}
 	if duplicated {
 		return types.NamespacedName{}, unattributedReasonDuplicateTargetPolicy, true
