@@ -47,17 +47,16 @@ func (r *WorkloadNetworkPolicyReconciler) checkDuplicateTarget(
 	ctx context.Context,
 	wnp *securityv1alpha1.WorkloadNetworkPolicy,
 ) (duplicateTargetConflict, bool, error) {
-	ref := wnp.Spec.TargetRef
-	if ref.Kind == "" || ref.Name == "" || wnp.Spec.Direction == "" {
+	target, ok := wnpTargetKey(wnp)
+	if !ok {
 		return duplicateTargetConflict{}, false, nil
 	}
+	ref := wnp.Spec.TargetRef
 
 	var wnpList securityv1alpha1.WorkloadNetworkPolicyList
 	if err := r.List(ctx, &wnpList,
 		client.InNamespace(wnp.Namespace),
-		client.MatchingFields{workload.WNPTargetIndexField: workload.WNPTargetIndexKey(
-			ref.Kind, ref.Name, wnp.Spec.Direction,
-		)},
+		client.MatchingFields{workload.WNPTargetIndexField: target.target},
 	); err != nil {
 		return duplicateTargetConflict{}, false, fmt.Errorf(
 			"failed to list WorkloadNetworkPolicies targeting %s %s/%s %s: %w",
