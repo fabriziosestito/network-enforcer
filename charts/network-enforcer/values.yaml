@@ -115,7 +115,7 @@ controller:
           repository: fluent/fluent-bit
           # The image tag used by fluent-bit
           # @schema required
-          tag: 5.1.4
+          tag: 5.1.5
           pullPolicy: IfNotPresent
         # @schema $ref: $k8s/_definitions.json#/definitions/io.k8s.api.core.v1.ResourceRequirements
         resources:
