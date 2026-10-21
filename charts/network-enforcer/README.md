@@ -118,6 +118,12 @@ Calico does not support `insecure`: Goldmane requires mTLS. Cilium `insecure` is
 plaintext to Relay port 80: set `tls.mode=insecure` and clear `tls.serverName`.
 If `endpoint` is still the default `:443`, the chart rewrites it to `:80`.
 
+### Admission webhook
+
+The controller serves a validating admission webhook for
+`WorkloadNetworkPolicy`. It rejects a `WorkloadNetworkPolicy` whose
+`(targetRef, direction)` is already taken in the same namespace.
+
 ### Scheduling
 
 `controller`, `controller.provider.istio.fluentBit`, and `telemetry.defaultCollector`

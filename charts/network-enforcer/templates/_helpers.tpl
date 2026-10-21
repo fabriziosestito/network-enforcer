@@ -213,17 +213,6 @@ network-enforcer.hubble-relay.cilium.io
 {{- end -}}
 
 {{/*
-True when the chart should create the self-signed CA Issuer used by issuer
-mode and the shipped OTel collector.
-*/}}
-{{- define "network-enforcer.caIssuer.enabled" -}}
-{{- $mode := include "network-enforcer.provider.tls.mode" . | trim -}}
-{{- if or (eq .Values.telemetry.collectorStrategy "default") (eq $mode "issuer") -}}
-true
-{{- end -}}
-{{- end -}}
-
-{{/*
 Existing Secret settings for the active provider.
 */}}
 {{- define "network-enforcer.provider.tls.existingSecret" -}}

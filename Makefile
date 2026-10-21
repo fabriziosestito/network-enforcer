@@ -58,11 +58,12 @@ TARGET=controller
 $(foreach T,$(TARGET),$(eval $(call BUILD_template,$(T))))
 
 .PHONY: manifests
-manifests: controller-gen ## Generate CRDs and RBAC.
-	"$(CONTROLLER_GEN)" crd paths="./api/v1alpha1" \
-		output:crd:artifacts:config=charts/network-enforcer/templates/crd
-	"$(CONTROLLER_GEN)" rbac:roleName=controller-role paths="./internal/controller" \
-		output:rbac:artifacts:config=charts/network-enforcer/templates/controller
+manifests: controller-gen ## Generate webhook configuration, CRDs and RBAC.
+	"$(CONTROLLER_GEN)" crd rbac:roleName=controller-role webhook \
+		paths="./api/v1alpha1" paths="./internal/controller" \
+		output:crd:artifacts:config=charts/network-enforcer/templates/crd \
+		output:rbac:artifacts:config=charts/network-enforcer/templates/controller \
+		output:webhook:none
 	sed -i 's/controller-role/{{ include "network-enforcer.fullname" . }}-controller/' \
 		charts/network-enforcer/templates/controller/role.yaml
 	# Inject Helm labels after the name line
@@ -266,7 +267,8 @@ generate-calico-goldmane-proto: download-calico-goldmane-proto protoc-gen-go pro
 # Example: `make test-e2e E2E_PROVIDER=istio`
 #
 # Set E2E_USE_EXISTING_CLUSTER=true to reuse an existing cluster.
-# Set E2E_DEPENDENCIES=none to skip the provider/cert-manager installation (useful with existing clusters).
+# Set E2E_DEPENDENCIES=none to skip dependency installation (useful with existing clusters).
+# cert-manager must still be available because the chart always enables its validating webhook.
 # Example: `make test-e2e E2E_USE_EXISTING_CLUSTER=true E2E_DEPENDENCIES=none`
 # Set E2E_NO_REBUILD=true to skip image building.  This is useful when you're developing new e2e tests.
 .PHONY: test-e2e
