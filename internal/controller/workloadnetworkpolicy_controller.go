@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
 	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -45,6 +46,7 @@ type WorkloadNetworkPolicyReconciler struct {
 	Scheme *runtime.Scheme
 
 	selectorOverlaps prometheus.Counter
+	duplicateTargets prometheus.Counter
 }
 
 // +kubebuilder:rbac:groups=networkenforcer.kubewarden.io,resources=workloadnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -64,24 +66,49 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	condition, err := r.checkSelectorScope(ctx, &wnp)
+	conflict, conflicting, err := r.checkDuplicateTarget(ctx, &wnp)
 	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if conflicting && !conflict.winner {
+		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, conflict.condition)
+	}
+
+	condition, err := r.reconcilePolicy(ctx, log, &wnp)
+	if condition.Type == "" && !conflicting {
+		return ctrl.Result{}, err
+	}
+	if conflicting {
+		condition = conflict.condition
+	}
+	return ctrl.Result{}, errors.Join(err, r.updateReadyCondition(ctx, &wnp, condition))
+}
+
+// reconcilePolicy checks the policy scope and renders the data-plane object.
+// It returns a zero condition when the policy state could not be evaluated.
+func (r *WorkloadNetworkPolicyReconciler) reconcilePolicy(
+	ctx context.Context,
+	log logr.Logger,
+	wnp *securityv1alpha1.WorkloadNetworkPolicy,
+) (metav1.Condition, error) {
+	condition, err := r.checkSelectorScope(ctx, wnp)
+	if err != nil {
+		return metav1.Condition{}, err
 	}
 
 	if condition.Reason == reasonSelectorDoesNotMatchTarget &&
 		wnp.Spec.Mode != securityv1alpha1.WorkloadNetworkPolicyModeMonitor {
-		retainedCondition, checkErr := r.checkRetainedPolicyScope(ctx, &wnp, condition)
+		retainedCondition, checkErr := r.checkRetainedPolicyScope(ctx, wnp, condition)
 		if checkErr != nil {
-			return ctrl.Result{}, errors.Join(checkErr, r.updateReadyCondition(ctx, &wnp, condition))
+			return condition, checkErr
 		}
-		return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, retainedCondition)
+		return retainedCondition, nil
 	}
 
 	if wnp.Spec.IsKubernetesBackend() {
-		err = r.reconcileK8sPolicy(ctx, log, &wnp)
+		err = r.reconcileK8sPolicy(ctx, log, wnp)
 	} else {
-		err = r.reconcileIstioPolicy(ctx, &wnp)
+		err = r.reconcileIstioPolicy(ctx, wnp)
 	}
 	if err != nil {
 		reason := reasonPolicyReconciliationFailed
@@ -95,10 +122,9 @@ func (r *WorkloadNetworkPolicyReconciler) Reconcile(
 			Reason:             reason,
 			Message:            err.Error(),
 		}
-		return ctrl.Result{}, errors.Join(err, r.updateReadyCondition(ctx, &wnp, condition))
 	}
 
-	return ctrl.Result{}, r.updateReadyCondition(ctx, &wnp, condition)
+	return condition, err
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -107,11 +133,17 @@ func (r *WorkloadNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 	if err := metrics.Registry.Register(r.selectorOverlaps); err != nil {
 		return fmt.Errorf("failed to register selector overlap metric: %w", err)
 	}
+	r.duplicateTargets = newDuplicateTargetsCounter()
+	if err := metrics.Registry.Register(r.duplicateTargets); err != nil {
+		return fmt.Errorf("failed to register duplicate target metric: %w", err)
+	}
 
 	workloadHandler := handler.EnqueueRequestsFromMapFunc(r.policiesForWorkload)
 	workloadChanges := builder.WithPredicates(predicate.GenerationChangedPredicate{})
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.WorkloadNetworkPolicy{}).
+		Watches(&securityv1alpha1.WorkloadNetworkPolicy{},
+			r.duplicateTargetHandler(), workloadChanges).
 		Owns(&networkingv1.NetworkPolicy{}).
 		Watches(&appsv1.Deployment{}, workloadHandler, workloadChanges).
 		Watches(&appsv1.StatefulSet{}, workloadHandler, workloadChanges).

@@ -187,6 +187,8 @@ func (r *WorkloadNetworkPolicyReconciler) updateReadyCondition(
 	previous := apiMeta.FindStatusCondition(wnp.Status.Conditions, conditionReady)
 	newOverlap := condition.Reason == reasonSelectorOverlapsWorkload &&
 		(previous == nil || previous.Reason != reasonSelectorOverlapsWorkload)
+	newDuplicateTarget := condition.Reason == reasonDuplicateTarget &&
+		(previous == nil || previous.Reason != reasonDuplicateTarget)
 	base := client.MergeFromWithOptions(wnp.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	if !apiMeta.SetStatusCondition(&wnp.Status.Conditions, condition) {
 		return nil
@@ -196,6 +198,9 @@ func (r *WorkloadNetworkPolicyReconciler) updateReadyCondition(
 	}
 	if newOverlap && r.selectorOverlaps != nil {
 		r.selectorOverlaps.Inc()
+	}
+	if newDuplicateTarget && r.duplicateTargets != nil {
+		r.duplicateTargets.Inc()
 	}
 	return nil
 }

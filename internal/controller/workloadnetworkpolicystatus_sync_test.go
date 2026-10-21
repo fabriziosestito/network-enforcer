@@ -179,27 +179,31 @@ func TestAttributeViolation(t *testing.T) {
 	}{
 		// Step 1: reported enforcing object, verified.
 		{
-			name:    "reported_networkpolicy_owned_by_wnp_targeting_subject",
-			obs:     newAttributionObservation(egress, frontend, backend, "frontend-egress"),
-			wantWNP: "frontend-egress",
+			name:       "reported_networkpolicy_owned_by_wnp_targeting_subject",
+			obs:        newAttributionObservation(egress, frontend, backend, "frontend-egress"),
+			wantWNP:    "frontend-egress",
+			wantLookup: true,
 		},
 		{
-			name:    "reported_networkpolicy_attributed_to_its_owner_not_its_name",
-			obs:     newAttributionObservation(egress, frontend, backend, "renamed-np"),
-			wantWNP: "frontend-egress",
+			name:       "reported_networkpolicy_attributed_to_its_owner_not_its_name",
+			obs:        newAttributionObservation(egress, frontend, backend, "renamed-np"),
+			wantWNP:    "frontend-egress",
+			wantLookup: true,
 		},
 		{
-			name:    "reported_wnp_without_backing_networkpolicy",
-			obs:     newAttributionObservation(ingress, frontend, backend, "backend-ingress"),
-			wantWNP: "backend-ingress",
+			name:       "reported_wnp_without_backing_networkpolicy",
+			obs:        newAttributionObservation(ingress, frontend, backend, "backend-ingress"),
+			wantWNP:    "backend-ingress",
+			wantLookup: true,
 		},
 		{
 			// The reported AuthorizationPolicy is controlled by web-ingress; a
 			// NetworkPolicy sharing its name but owned by canary-egress must not be
 			// taken as its owner (that would count a false disagreement).
-			name:    "istio_report_ignores_namesake_networkpolicy",
-			obs:     webIstioReport,
-			wantWNP: "web-ingress",
+			name:       "istio_report_ignores_namesake_networkpolicy",
+			obs:        webIstioReport,
+			wantWNP:    "web-ingress",
+			wantLookup: true,
 		},
 		// Step 2: targetRef index.
 		{
@@ -241,6 +245,13 @@ func TestAttributeViolation(t *testing.T) {
 			wantWNP:    "frontend-egress",
 			wantLookup: true,
 		},
+		{
+			name:       "reported_policy_uniqueness_lookup_fails",
+			obs:        newAttributionObservation(egress, frontend, backend, "frontend-egress"),
+			failLookup: true,
+			wantReason: unattributedReasonLookupFailed,
+			wantLookup: true,
+		},
 		// Step 3: explicitly unattributed.
 		{
 			name:       "no_wnp_targets_subject",
@@ -259,7 +270,29 @@ func TestAttributeViolation(t *testing.T) {
 			name:       "duplicate_wnps_target_subject",
 			obs:        newAttributionObservation(egress, deploymentRef("dup"), backend, ""),
 			wantReason: unattributedReasonDuplicateTargetPolicy,
-			wantLookup: true,
+		},
+		{
+			// The snapshot hides one duplicate, so the duplicate is only
+			// detected by the targetRef lookup against the cache.
+			name:                "duplicate_wnps_only_in_cache",
+			obs:                 newAttributionObservation(egress, deploymentRef("dup"), backend, ""),
+			excludeFromSnapshot: "dup-b",
+			wantReason:          unattributedReasonDuplicateTargetPolicy,
+			wantLookup:          true,
+		},
+		{
+			name:       "reported_policy_duplicate_wnps_target_subject",
+			obs:        newAttributionObservation(egress, deploymentRef("dup"), backend, "dup-a"),
+			wantReason: unattributedReasonDuplicateTargetPolicy,
+		},
+		{
+			// The snapshot hides one duplicate, so only the current target
+			// lookup can tell the reported owner is still conflicted.
+			name:                "reported_policy_duplicate_wnps_only_in_cache",
+			obs:                 newAttributionObservation(egress, deploymentRef("dup"), backend, "dup-a"),
+			excludeFromSnapshot: "dup-b",
+			wantReason:          unattributedReasonDuplicateTargetPolicy,
+			wantLookup:          true,
 		},
 		{
 			name:       "targetref_lookup_fails",
@@ -300,6 +333,7 @@ func TestAttributeViolation(t *testing.T) {
 			if tt.excludeFromSnapshot != "" {
 				delete(fx.wnpByKey, wnpKey(tt.excludeFromSnapshot))
 			}
+			duplicates := duplicateTargets(fx.wnpByKey)
 
 			lookups := 0
 			c := interceptor.NewClient(fx.client, interceptor.Funcs{
@@ -317,7 +351,7 @@ func TestAttributeViolation(t *testing.T) {
 			m := newAttributionMetrics()
 			r := &WorkloadNetworkPolicyStatusSync{Client: c, logger: ctrl.Log.WithName("test"), metrics: m}
 
-			gotKey, gotReason := r.attributeViolation(t.Context(), tt.obs, fx.ownedIndex, fx.wnpByKey)
+			gotKey, gotReason := r.attributeViolation(t.Context(), tt.obs, fx.ownedIndex, fx.wnpByKey, duplicates)
 
 			if tt.wantWNP != "" {
 				require.Empty(t, gotReason)
@@ -358,7 +392,8 @@ func TestCorrelateViolationsToWNPs(t *testing.T) {
 		newAttributionObservation(egress, deploymentRef("dup"), backend, ""),
 	}
 
-	result := r.correlateViolationsToWNPs(t.Context(), observations, fx.ownedIndex, fx.wnpByKey)
+	result := r.correlateViolationsToWNPs(
+		t.Context(), observations, fx.ownedIndex, fx.wnpByKey, duplicateTargets(fx.wnpByKey))
 
 	require.Len(t, result, 1)
 	records := result[wnpKey("frontend-egress")]
@@ -409,7 +444,8 @@ func TestAttributeViolationOffClusterEgressPeer(t *testing.T) {
 			r := &WorkloadNetworkPolicyStatusSync{Client: fx.client, logger: ctrl.Log.WithName("test"), metrics: m}
 
 			result := r.correlateViolationsToWNPs(
-				t.Context(), []violation.Observation{tt.obs}, fx.ownedIndex, fx.wnpByKey)
+				t.Context(), []violation.Observation{tt.obs}, fx.ownedIndex, fx.wnpByKey,
+				duplicateTargets(fx.wnpByKey))
 
 			records := result[wnpKey("frontend-egress")]
 			require.Len(t, records, 1)

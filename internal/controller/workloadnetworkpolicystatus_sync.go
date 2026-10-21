@@ -125,7 +125,8 @@ func (r *WorkloadNetworkPolicyStatusSync) sync(ctx context.Context) error {
 	// The buffer is drained even when no WNP exists so those observations are
 	// counted as unattributed.
 	observations := r.violationBuffer.Drain()
-	violationsByWNP := r.correlateViolationsToWNPs(ctx, observations, ownedIndex, wnpByKey)
+	duplicates := duplicateTargets(wnpByKey)
+	violationsByWNP := r.correlateViolationsToWNPs(ctx, observations, ownedIndex, wnpByKey, duplicates)
 
 	if len(wnpByKey) == 0 {
 		r.logger.V(loglevel.VerbosityDebug).Info("No WorkloadNetworkPolicies found, skipping status update")
@@ -201,11 +202,12 @@ func (r *WorkloadNetworkPolicyStatusSync) correlateViolationsToWNPs(
 	scraped []violation.Observation,
 	ownedIndex map[types.NamespacedName]*types.NamespacedName,
 	wnpByKey map[types.NamespacedName]*securityv1alpha1.WorkloadNetworkPolicy,
+	duplicates map[wnpTarget]struct{},
 ) map[types.NamespacedName][]securityv1alpha1.ViolationRecord {
 	result := make(map[types.NamespacedName][]securityv1alpha1.ViolationRecord)
 
 	for _, obs := range scraped {
-		wnpKey, reason := r.attributeViolation(ctx, obs, ownedIndex, wnpByKey)
+		wnpKey, reason := r.attributeViolation(ctx, obs, ownedIndex, wnpByKey, duplicates)
 		if reason != "" {
 			r.metrics.recordUnattributed(obs, reason)
 			r.logger.V(loglevel.VerbosityDebug).Info("Could not attribute violation to a WorkloadNetworkPolicy",
@@ -235,6 +237,9 @@ func (r *WorkloadNetworkPolicyStatusSync) correlateViolationsToWNPs(
 // to. It returns the WNP key and an empty reason on success, or the
 // unattributed reason otherwise. The chain is:
 //
+//  0. When more than one WNP targets the subject workload in that direction,
+//     the violation is unattributed, regardless of the reported enforcing
+//     object.
 //  1. The enforcing object reported by the data plane, when its owning WNP is
 //     verified against the ownership index and targets the subject workload.
 //  2. Otherwise, the WNP whose (targetRef, direction) matches the subject.
@@ -244,23 +249,23 @@ func (r *WorkloadNetworkPolicyStatusSync) attributeViolation(
 	obs violation.Observation,
 	ownedIndex map[types.NamespacedName]*types.NamespacedName,
 	wnpByKey map[types.NamespacedName]*securityv1alpha1.WorkloadNetworkPolicy,
+	duplicates map[wnpTarget]struct{},
 ) (types.NamespacedName, string) {
 	subject, hasSubject := violationSubject(obs)
 
+	if hasSubject {
+		key := wnpTarget{
+			namespace: subject.Namespace,
+			target:    workload.WNPTargetIndexKey(subject.OwnerKind, subject.OwnerName, obs.Direction),
+		}
+		if _, duplicated := duplicates[key]; duplicated {
+			return types.NamespacedName{}, unattributedReasonDuplicateTargetPolicy
+		}
+	}
+
 	if reportedWNP, ok := r.reportedOwningWNP(ctx, obs, ownedIndex, wnpByKey); ok && hasSubject {
-		targetsSubject := reportedWNP.Namespace == subject.Namespace &&
-			reportedWNP.Spec.TargetRef.Kind == subject.OwnerKind &&
-			reportedWNP.Spec.TargetRef.Name == subject.OwnerName
-		if !targetsSubject {
-			r.metrics.recordDisagreement(obs)
-			r.logger.Info("Reported policy is owned by a WorkloadNetworkPolicy targeting another workload, "+
-				"attributing violation to the subject; pod selectors likely overlap",
-				"reportedPolicyNamespace", obs.DenyingPolicyNamespace,
-				"reportedPolicyName", obs.DenyingPolicyName,
-				"owningPolicy", reportedWNP.NamespacedName().String(),
-				"subject", subject)
-		} else if reportedWNP.Spec.Direction == obs.Direction {
-			return reportedWNP.NamespacedName(), ""
+		if wnpKey, reason, resolved := r.attributeReportedPolicy(ctx, obs, reportedWNP, subject); resolved {
+			return wnpKey, reason
 		}
 	}
 
@@ -287,6 +292,104 @@ func (r *WorkloadNetworkPolicyStatusSync) attributeViolation(
 		return types.NamespacedName{}, unattributedReasonNoTargetPolicy
 	}
 	return wnpKey, ""
+}
+
+// attributeReportedPolicy resolves the violation from the enforcing object
+// reported by the data plane. It reports false when the reported owner does
+// not target the subject in the observed direction, so attribution falls back
+// to the targetRef lookup.
+func (r *WorkloadNetworkPolicyStatusSync) attributeReportedPolicy(
+	ctx context.Context,
+	obs violation.Observation,
+	reportedWNP *securityv1alpha1.WorkloadNetworkPolicy,
+	subject securityv1alpha1.WorkloadRef,
+) (types.NamespacedName, string, bool) {
+	targetsSubject := reportedWNP.Namespace == subject.Namespace &&
+		reportedWNP.Spec.TargetRef.Kind == subject.OwnerKind &&
+		reportedWNP.Spec.TargetRef.Name == subject.OwnerName
+	if !targetsSubject {
+		r.metrics.recordDisagreement(obs)
+		r.logger.Info("Reported policy is owned by a WorkloadNetworkPolicy targeting another workload, "+
+			"attributing violation to the subject; pod selectors likely overlap",
+			"reportedPolicyNamespace", obs.DenyingPolicyNamespace,
+			"reportedPolicyName", obs.DenyingPolicyName,
+			"owningPolicy", reportedWNP.NamespacedName().String(),
+			"subject", subject)
+		return types.NamespacedName{}, "", false
+	}
+	if reportedWNP.Spec.Direction != obs.Direction {
+		return types.NamespacedName{}, "", false
+	}
+
+	duplicated, err := r.targetDuplicated(ctx, subject, obs.Direction)
+	if err != nil {
+		r.logger.Error(err, "Failed to verify WorkloadNetworkPolicy uniqueness", "subject", subject)
+		return types.NamespacedName{}, unattributedReasonLookupFailed, true
+	}
+	if duplicated {
+		return types.NamespacedName{}, unattributedReasonDuplicateTargetPolicy, true
+	}
+	return reportedWNP.NamespacedName(), "", true
+}
+
+// targetDuplicated reports whether the cache currently holds more than one
+// WNP targeting the subject workload in the given direction.
+func (r *WorkloadNetworkPolicyStatusSync) targetDuplicated(
+	ctx context.Context,
+	subject securityv1alpha1.WorkloadRef,
+	direction networkingv1.PolicyType,
+) (bool, error) {
+	_, err := workload.LookupWNPByTarget(
+		ctx, r.Client, subject.Namespace, subject.OwnerKind, subject.OwnerName, direction,
+	)
+	switch {
+	case errors.Is(err, workload.ErrDuplicateTarget):
+		return true, nil
+	case errors.Is(err, workload.ErrTargetNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	default:
+		return false, nil
+	}
+}
+
+// wnpTarget identifies a (namespace, targetRef, direction) tuple.
+type wnpTarget struct {
+	namespace string
+	target    string
+}
+
+func wnpTargetKey(wnp *securityv1alpha1.WorkloadNetworkPolicy) (wnpTarget, bool) {
+	ref := wnp.Spec.TargetRef
+	if ref.Kind == "" || ref.Name == "" || wnp.Spec.Direction == "" {
+		return wnpTarget{}, false
+	}
+	return wnpTarget{
+		namespace: wnp.Namespace,
+		target:    workload.WNPTargetIndexKey(ref.Kind, ref.Name, wnp.Spec.Direction),
+	}, true
+}
+
+// duplicateTargets returns the tuples targeted by more than one WNP in the
+// given snapshot.
+func duplicateTargets(
+	wnpByKey map[types.NamespacedName]*securityv1alpha1.WorkloadNetworkPolicy,
+) map[wnpTarget]struct{} {
+	counts := make(map[wnpTarget]int, len(wnpByKey))
+	for _, wnp := range wnpByKey {
+		if key, ok := wnpTargetKey(wnp); ok {
+			counts[key]++
+		}
+	}
+
+	duplicates := make(map[wnpTarget]struct{}, len(counts))
+	for key, count := range counts {
+		if count > 1 {
+			duplicates[key] = struct{}{}
+		}
+	}
+	return duplicates
 }
 
 // violationSubject returns the workload the violated policy selects: the

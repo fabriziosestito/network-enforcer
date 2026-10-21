@@ -44,7 +44,11 @@ func TestSelectorScopeWorkloadWatches(t *testing.T) {
 	})
 	require.NoError(t, err)
 	r := &WorkloadNetworkPolicyReconciler{Client: mgr.GetClient(), Scheme: s}
-	t.Cleanup(func() { metrics.Registry.Unregister(r.selectorOverlaps) })
+	t.Cleanup(func() {
+		metrics.Registry.Unregister(r.selectorOverlaps)
+		metrics.Registry.Unregister(r.duplicateTargets)
+	})
+	require.NoError(t, SetupWNPIndexer(t.Context(), mgr))
 	require.NoError(t, r.SetupWithManager(mgr))
 
 	ctx, cancel := context.WithCancel(t.Context())
