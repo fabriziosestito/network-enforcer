@@ -24,6 +24,13 @@ If release name contains chart name it will be used as a full name.
 {{- end }}
 
 {{/*
+Create the webhook Service name within the Kubernetes 63-character limit.
+*/}}
+{{- define "network-enforcer.webhookServiceName" -}}
+{{- printf "%s-controller-webhook" (include "network-enforcer.fullname" . | trunc 44 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
 Create chart name and version as used by the chart label.
 */}}
 {{- define "network-enforcer.chart" -}}

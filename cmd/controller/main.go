@@ -20,14 +20,18 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	otellog "go.opentelemetry.io/otel/log"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/go-logr/logr"
@@ -65,6 +69,24 @@ const (
 	// that point, so the shutdown runs against a fresh context.
 	otlpLogShutdownTimeout = 10 * time.Second
 )
+
+type cacheSyncReadinessRunnable struct {
+	cache  cache.Cache
+	synced *atomic.Bool
+}
+
+func (r cacheSyncReadinessRunnable) Start(ctx context.Context) error {
+	if !r.cache.WaitForCacheSync(ctx) {
+		return nil
+	}
+	r.synced.Store(true)
+	<-ctx.Done()
+	return nil
+}
+
+func (cacheSyncReadinessRunnable) NeedLeaderElection() bool {
+	return false
+}
 
 type otelConf struct {
 	Endpoint   string
@@ -416,15 +438,38 @@ func run(logger *slog.Logger, conf *config) error {
 		return err
 	}
 
-	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		return fmt.Errorf("unable to add healthz check: %w", err)
-	}
-	if err = mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		return fmt.Errorf("unable to add readyz check: %w", err)
+	if err = setupHealthChecks(mgr); err != nil {
+		return err
 	}
 
 	logger.InfoContext(ctx, "starting manager")
 	return mgr.Start(ctx)
+}
+
+func setupHealthChecks(mgr manager.Manager) error {
+	cacheSynced := &atomic.Bool{}
+	if err := mgr.Add(cacheSyncReadinessRunnable{cache: mgr.GetCache(), synced: cacheSynced}); err != nil {
+		return fmt.Errorf("unable to add cache sync readiness runnable: %w", err)
+	}
+
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to add healthz check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to add readyz check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		return fmt.Errorf("unable to add webhook readyz check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("cache", func(_ *http.Request) error {
+		if !cacheSynced.Load() {
+			return errors.New("manager cache has not synchronized")
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("unable to add cache readyz check: %w", err)
+	}
+	return nil
 }
 
 func setupControllers(

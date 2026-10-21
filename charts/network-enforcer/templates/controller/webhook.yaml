@@ -11,7 +11,7 @@ webhooks:
   - v1
   clientConfig:
     service:
-      name: {{ include "network-enforcer.fullname" . }}-controller-webhook
+      name: {{ include "network-enforcer.webhookServiceName" . }}
       namespace: {{ .Release.Namespace }}
       path: /validate-networkenforcer-kubewarden-io-v1alpha1-workloadnetworkpolicy
   failurePolicy: Fail

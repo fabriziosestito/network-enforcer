@@ -106,7 +106,7 @@ spec:
           volumeAttributes:
             csi.cert-manager.io/issuer-name: {{ include "network-enforcer.caIssuerName" . }}
             csi.cert-manager.io/issuer-kind: Issuer
-            csi.cert-manager.io/dns-names: {{ include "network-enforcer.fullname" . }}-controller-webhook.{{ .Release.Namespace }}.svc
+            csi.cert-manager.io/dns-names: {{ include "network-enforcer.webhookServiceName" . }}.{{ .Release.Namespace }}.svc
       securityContext: {{- toYaml .Values.controller.podSecurityContext | nindent
         8 }}
       {{- with .Values.controller.tolerations }}
