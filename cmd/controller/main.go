@@ -20,14 +20,18 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	otellog "go.opentelemetry.io/otel/log"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/go-logr/logr"
@@ -38,10 +42,12 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 	"github.com/kubewarden/network-enforcer/internal/certsource"
@@ -63,6 +69,24 @@ const (
 	// that point, so the shutdown runs against a fresh context.
 	otlpLogShutdownTimeout = 10 * time.Second
 )
+
+type cacheSyncReadinessRunnable struct {
+	cache  cache.Cache
+	synced *atomic.Bool
+}
+
+func (r cacheSyncReadinessRunnable) Start(ctx context.Context) error {
+	if !r.cache.WaitForCacheSync(ctx) {
+		return nil
+	}
+	r.synced.Store(true)
+	<-ctx.Done()
+	return nil
+}
+
+func (cacheSyncReadinessRunnable) NeedLeaderElection() bool {
+	return false
+}
 
 type otelConf struct {
 	Endpoint   string
@@ -269,6 +293,7 @@ func newControllerManager(conf *config) (manager.Manager, error) {
 	controllerOptions := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
+		WebhookServer:          webhook.NewServer(webhook.Options{TLSOpts: conf.tlsOpts}),
 		HealthProbeBindAddress: conf.probeAddr,
 		LeaderElection:         conf.enableLeaderElection,
 		LeaderElectionID:       "6163c1ee.networkenforcer.kubewarden.io",
@@ -413,15 +438,38 @@ func run(logger *slog.Logger, conf *config) error {
 		return err
 	}
 
-	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		return fmt.Errorf("unable to add healthz check: %w", err)
-	}
-	if err = mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		return fmt.Errorf("unable to add readyz check: %w", err)
+	if err = setupHealthChecks(mgr); err != nil {
+		return err
 	}
 
 	logger.InfoContext(ctx, "starting manager")
 	return mgr.Start(ctx)
+}
+
+func setupHealthChecks(mgr manager.Manager) error {
+	cacheSynced := &atomic.Bool{}
+	if err := mgr.Add(cacheSyncReadinessRunnable{cache: mgr.GetCache(), synced: cacheSynced}); err != nil {
+		return fmt.Errorf("unable to add cache sync readiness runnable: %w", err)
+	}
+
+	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to add healthz check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to add readyz check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		return fmt.Errorf("unable to add webhook readyz check: %w", err)
+	}
+	if err := mgr.AddReadyzCheck("cache", func(_ *http.Request) error {
+		if !cacheSynced.Load() {
+			return errors.New("manager cache has not synchronized")
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("unable to add cache readyz check: %w", err)
+	}
+	return nil
 }
 
 func setupControllers(
@@ -462,6 +510,12 @@ func setupControllers(
 		return fmt.Errorf("unable to add WorkloadNetworkPolicyStatusSync runnable: %w", err)
 	}
 
+	err = builder.WebhookManagedBy(mgr, &securityv1alpha1.WorkloadNetworkPolicy{}).
+		WithValidator(&controller.PolicyValidator{Client: mgr.GetClient()}).
+		Complete()
+	if err != nil {
+		return fmt.Errorf("unable to create WorkloadNetworkPolicy webhook: %w", err)
+	}
 	// +kubebuilder:scaffold:builder
 
 	return nil
@@ -487,7 +541,7 @@ func main() {
 	)
 	flag.StringVar(&conf.metrics.CertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&conf.enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics server")
+		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&conf.logLevel, "log-level", "info",
 		"Log level for controller logs. Valid values: debug, info, warn, error.")
 	flag.BoolVar(&conf.flowDumper.Enabled, "flow-dumper-enabled", false,

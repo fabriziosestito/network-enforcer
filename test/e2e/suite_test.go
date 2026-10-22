@@ -10,8 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/e2e-framework/klient/conf"
+	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
@@ -169,6 +171,21 @@ func waitForNetEnforcerReady(
 		wait.WithTimeout(defaultOperationTimeout),
 	); err != nil {
 		return fmt.Errorf("wait network enforcer deployment ready: %w", err)
+	}
+
+	logger.InfoContext(ctx, "⏲️ waiting for the admission webhook CA bundle")
+	if err := wait.For(
+		conditions.New(r).ResourceMatch(
+			&admissionregistrationv1.ValidatingWebhookConfiguration{
+				Name: wnpValidatingWebhookConfigurationName,
+			},
+			func(obj k8s.Object) bool {
+				vwc, ok := obj.(*admissionregistrationv1.ValidatingWebhookConfiguration)
+				return ok && len(vwc.Webhooks) > 0 && len(vwc.Webhooks[0].ClientConfig.CABundle) > 0
+			}),
+		wait.WithTimeout(defaultOperationTimeout),
+	); err != nil {
+		return fmt.Errorf("wait admission webhook CA bundle injected: %w", err)
 	}
 
 	if testCfg.HasE2EDependency("cert-manager") {
