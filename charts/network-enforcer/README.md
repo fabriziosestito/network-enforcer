@@ -356,12 +356,14 @@ To verify the cosign signature of the OCI package, run both commands:
 ```shell
 cosign verify --new-bundle-format=false \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+    --certificate-github-workflow-repository=kubewarden/helm-charts \
     --certificate-identity-regexp='^https://github\.com/kubewarden/helm-charts/\.github/workflows/chart-release\.yml@' \
     ghcr.io/kubewarden/charts/network-enforcer:<CHART VERSION TO VERIFY>
 
 cosign verify-attestation --new-bundle-format=true \
     --type https://sigstore.dev/cosign/sign/v1 \
     --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+    --certificate-github-workflow-repository=kubewarden/helm-charts \
     --certificate-identity-regexp='^https://github\.com/kubewarden/helm-charts/\.github/workflows/chart-release\.yml@' \
     ghcr.io/kubewarden/charts/network-enforcer:<CHART VERSION TO VERIFY>
 ```
