@@ -13,7 +13,7 @@ conditions:
     kind: dockerimage
     sourceid: go
     spec:
-      image: registry.suse.com/bci/golang
+      image: docker.io/library/golang
 
 targets:
   gomod:
@@ -34,7 +34,7 @@ targets:
         - package/Dockerfile.controller
       instruction:
         keyword: FROM
-        matcher: registry.suse.com/bci/golang
+        matcher: docker.io/library/golang
 
   pre-commit-yaml:
     name: 'deps(go): update pre-commit Go version to {{ source "go" }}'
