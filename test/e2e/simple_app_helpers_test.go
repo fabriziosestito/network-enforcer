@@ -148,18 +148,24 @@ func execInSimpleClientDeploymentRaw(
 	ctx context.Context,
 	command []string,
 ) (string, string, error) {
-	namespace := getNamespace(ctx)
-	r := getSecurityV1Alpha1Client(ctx)
+	return execInDeploymentRaw(ctx, simpleAppClientDeploymentName, command)
+}
+
+func execInDeploymentRaw(
+	ctx context.Context,
+	deployment string,
+	command []string,
+) (string, string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
 	execCtx, cancel := context.WithTimeout(ctx, defaultPodExecTimeout)
 	defer cancel()
 
-	err := r.ExecInDeployment(
+	err := getSecurityV1Alpha1Client(ctx).ExecInDeployment(
 		execCtx,
-		namespace,
-		simpleAppClientDeploymentName,
+		getNamespace(ctx),
+		deployment,
 		command,
 		&stdout,
 		&stderr,

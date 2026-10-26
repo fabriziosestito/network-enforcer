@@ -279,7 +279,7 @@ ifeq ($(E2E_NO_REBUILD),)
 endif
 endif
 	@echo "🧪 Running e2e tests with '$(E2E_PROVIDER)' provider..."
-	E2E_PROVIDER=$(E2E_PROVIDER) E2E_USE_EXISTING_CLUSTER=$(E2E_USE_EXISTING_CLUSTER) E2E_DEPENDENCIES=$(E2E_DEPENDENCIES) go test -v ./test/e2e/... -count=1
+	E2E_PROVIDER=$(E2E_PROVIDER) E2E_USE_EXISTING_CLUSTER=$(E2E_USE_EXISTING_CLUSTER) E2E_DEPENDENCIES=$(E2E_DEPENDENCIES) go test -v ./test/e2e/... -count=1 -timeout 40m
 
 # Create kind cluster and install selected provider with dependencies.
 #
