@@ -34,9 +34,15 @@ func (r *WorkloadNetworkPolicyReconciler) checkRetainedPolicyScope(
 		return metav1.Condition{}, err
 	}
 	_, _, overlaps := matchWorkloadTemplates(wnp, selector, templates)
+	if len(overlaps) == 0 {
+		overlaps, err = r.podSelectorOverlaps(ctx, wnp, selector, templates)
+		if err != nil {
+			return metav1.Condition{}, err
+		}
+	}
 	message := mismatch.Message + "; retained policy selector and rules remain unchanged until the selector is corrected"
 	if len(overlaps) > 0 {
-		overlapMessage := "Retained policy selector also selects workload " + slices.Min(overlaps)
+		overlapMessage := "Retained policy selector also selects " + slices.Min(overlaps)
 		return metav1.Condition{
 			Type:               conditionReady,
 			Status:             metav1.ConditionFalse,

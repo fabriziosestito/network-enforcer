@@ -10,6 +10,7 @@ import (
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -28,6 +29,7 @@ const (
 type workloadTemplate struct {
 	target securityv1alpha1.WorkloadTargetRef
 	labels map[string]string
+	uid    types.UID
 }
 
 func newSelectorOverlapsCounter() prometheus.Counter {
@@ -58,6 +60,12 @@ func (r *WorkloadNetworkPolicyReconciler) checkSelectorScope(
 	}
 
 	targetFound, targetMatches, overlaps := matchWorkloadTemplates(wnp, selector, templates)
+	if len(overlaps) == 0 && (!targetFound || targetMatches) {
+		overlaps, err = r.podSelectorOverlaps(ctx, wnp, selector, templates)
+		if err != nil {
+			return metav1.Condition{}, err
+		}
+	}
 	return selectorScopeCondition(wnp, targetFound, targetMatches, overlaps), nil
 }
 
@@ -76,7 +84,7 @@ func matchWorkloadTemplates(
 		} else if matches {
 			overlaps = append(
 				overlaps,
-				fmt.Sprintf("%s %s/%s", template.target.Kind, wnp.Namespace, template.target.Name),
+				fmt.Sprintf("workload %s %s/%s", template.target.Kind, wnp.Namespace, template.target.Name),
 			)
 		}
 	}
@@ -109,7 +117,7 @@ func selectorScopeCondition(
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: wnp.Generation,
 			Reason:             reasonSelectorOverlapsWorkload,
-			Message:            "Policy selector also selects workload " + overlaps[0],
+			Message:            "Policy selector also selects " + overlaps[0],
 		}
 	case !targetFound:
 		return metav1.Condition{
@@ -156,6 +164,7 @@ func (r *WorkloadNetworkPolicyReconciler) workloadTemplates(
 				Name: deployment.Name,
 			},
 			labels: deployment.Spec.Template.Labels,
+			uid:    deployment.UID,
 		})
 	}
 	for _, statefulSet := range statefulSets.Items {
@@ -165,6 +174,7 @@ func (r *WorkloadNetworkPolicyReconciler) workloadTemplates(
 				Name: statefulSet.Name,
 			},
 			labels: statefulSet.Spec.Template.Labels,
+			uid:    statefulSet.UID,
 		})
 	}
 	for _, daemonSet := range daemonSets.Items {
@@ -174,6 +184,7 @@ func (r *WorkloadNetworkPolicyReconciler) workloadTemplates(
 				Name: daemonSet.Name,
 			},
 			labels: daemonSet.Spec.Template.Labels,
+			uid:    daemonSet.UID,
 		})
 	}
 	return templates, nil

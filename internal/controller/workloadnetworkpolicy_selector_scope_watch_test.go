@@ -7,10 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,10 +30,30 @@ import (
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
 
-func TestSelectorScopeWorkloadWatches(t *testing.T) {
+func startSelectorScopeManager(t *testing.T) (*WorkloadNetworkPolicyReconciler, client.Client) {
+	t.Helper()
 	testEnv := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "charts", "network-enforcer", "templates", "crd")},
 		ErrorIfCRDPathMissing: true,
+		CRDs: []*apiextensionsv1.CustomResourceDefinition{{
+			Name: "authorizationpolicies.security.istio.io",
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Group: "security.istio.io",
+				Names: apiextensionsv1.CustomResourceDefinitionNames{
+					Plural: "authorizationpolicies", Kind: "AuthorizationPolicy",
+				},
+				Scope: apiextensionsv1.NamespaceScoped,
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+					Name: "v1", Served: true, Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{
+						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+							Type:                   "object",
+							XPreserveUnknownFields: new(true),
+						},
+					},
+				}},
+			},
+		}},
 	}
 	cfg, err := testEnv.Start()
 	require.NoError(t, err)
@@ -38,6 +62,7 @@ func TestSelectorScopeWorkloadWatches(t *testing.T) {
 	s := runtime.NewScheme()
 	require.NoError(t, scheme.AddToScheme(s))
 	require.NoError(t, securityv1alpha1.AddToScheme(s))
+	require.NoError(t, istiosecurityv1.AddToScheme(s))
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: s, Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
 		Controller: config.Controller{SkipNameValidation: new(true)},
@@ -64,6 +89,12 @@ func TestSelectorScopeWorkloadWatches(t *testing.T) {
 	require.True(t, mgr.GetCache().WaitForCacheSync(ctx))
 	apiClient, err := client.New(cfg, client.Options{Scheme: s})
 	require.NoError(t, err)
+	return r, apiClient
+}
+
+func TestSelectorScopeWorkloadWatches(t *testing.T) {
+	_, apiClient := startSelectorScopeManager(t)
+	ctx := t.Context()
 
 	for _, kind := range []securityv1alpha1.WorkloadKind{
 		securityv1alpha1.WorkloadKindDeployment, securityv1alpha1.WorkloadKindStatefulSet, securityv1alpha1.WorkloadKindDaemonSet,
@@ -131,6 +162,142 @@ func TestSelectorScopeWorkloadWatches(t *testing.T) {
 	}
 }
 
+func TestSelectorScopePodWatches(t *testing.T) {
+	r, c := startSelectorScopeManager(t)
+	ctx := t.Context()
+	for _, backend := range []securityv1alpha1.PolicyBackend{
+		securityv1alpha1.PolicyBackendKubernetes, securityv1alpha1.PolicyBackendIstio,
+	} {
+		t.Run(string(backend), func(t *testing.T) {
+			namespace := strings.ToLower(string(backend))
+			require.NoError(t, c.Create(ctx, &corev1.Namespace{Name: namespace}))
+			wnp := scopePolicy(backend)
+			wnp.UID, wnp.Generation, wnp.Namespace = "", 0, namespace
+			target := scopeWorkload(wnp.Spec.TargetRef.Kind, "web", namespace,
+				map[string]string{"workload": "web", "app": "web"})
+			require.NoError(t, c.Create(ctx, target))
+			require.NoError(t, c.Create(ctx, wnp))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+			baseline := testutil.ToFloat64(r.selectorOverlaps)
+
+			pod := scopePod(namespace, nil)
+			require.NoError(t, c.Create(ctx, pod))
+			condition := waitForScopeCondition(
+				t,
+				c,
+				wnp.NamespacedName(),
+				reasonSelectorOverlapsWorkload,
+				metav1.ConditionFalse,
+			)
+			require.Contains(t, condition.Message, "Pod "+namespace+"/"+pod.Name)
+
+			rs := &appsv1.ReplicaSet{
+				Name:      "web-rs",
+				Namespace: namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					scopeOwner("Deployment", target.GetName(), target.GetUID()),
+				},
+				Spec: appsv1.ReplicaSetSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}},
+						Spec:       pod.Spec,
+					},
+				},
+			}
+			require.NoError(t, c.Create(ctx, rs))
+			pod.OwnerReferences = []metav1.OwnerReference{scopeOwner("ReplicaSet", rs.Name, rs.UID)}
+			require.NoError(t, c.Update(ctx, pod))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+
+			pod.OwnerReferences = []metav1.OwnerReference{scopeOwner("Job", "batch", "job")}
+			require.NoError(t, c.Update(ctx, pod))
+			condition = waitForScopeCondition(
+				t,
+				c,
+				wnp.NamespacedName(),
+				reasonSelectorOverlapsWorkload,
+				metav1.ConditionFalse,
+			)
+			require.Contains(t, condition.Message, "Job "+namespace+"/batch")
+			for _, app := range []string{"other", "web"} {
+				pod.Labels["app"] = app
+				require.NoError(t, c.Update(ctx, pod))
+				if app == "other" {
+					waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+				} else {
+					waitForScopeCondition(
+						t,
+						c,
+						wnp.NamespacedName(),
+						reasonSelectorOverlapsWorkload,
+						metav1.ConditionFalse,
+					)
+				}
+			}
+			require.NoError(t, c.Delete(ctx, pod, client.GracePeriodSeconds(0)))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+
+			pod = scopePod(namespace, new(scopeOwner("ReplicaSet", rs.Name, rs.UID)))
+			require.NoError(t, c.Create(ctx, pod))
+			for _, ownerName := range []string{"other", "web"} {
+				rs.OwnerReferences = []metav1.OwnerReference{scopeOwner("Deployment", ownerName, target.GetUID())}
+				require.NoError(t, c.Update(ctx, rs))
+				if ownerName == "other" {
+					waitForScopeCondition(
+						t,
+						c,
+						wnp.NamespacedName(),
+						reasonSelectorOverlapsWorkload,
+						metav1.ConditionFalse,
+					)
+				} else {
+					waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+				}
+			}
+			require.NoError(t, c.Delete(ctx, rs))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorOverlapsWorkload, metav1.ConditionFalse)
+			require.NoError(t, c.Delete(ctx, pod, client.GracePeriodSeconds(0)))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorScopeValid, metav1.ConditionTrue)
+			require.EventuallyWithT(t, func(collect *assert.CollectT) {
+				assert.InDelta(collect, baseline+5, testutil.ToFloat64(r.selectorOverlaps), 0)
+			}, 5*time.Second, 50*time.Millisecond)
+
+			policy := renderedPolicyObject(backend)
+			require.NoError(t, c.Get(ctx, wnp.NamespacedName(), policy))
+			originalVersion := policy.GetResourceVersion()
+			require.NoError(t, c.Get(ctx, wnp.NamespacedName(), wnp))
+			setPolicyAppSelector(wnp, "api")
+			require.NoError(t, c.Update(ctx, wnp))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorDoesNotMatchTarget, metav1.ConditionFalse)
+			pod = scopePod(namespace, nil)
+			require.NoError(t, c.Create(ctx, pod))
+			condition = waitForScopeCondition(
+				t,
+				c,
+				wnp.NamespacedName(),
+				reasonSelectorOverlapsWorkload,
+				metav1.ConditionFalse,
+			)
+			require.Contains(t, condition.Message, "Retained policy selector")
+			require.Contains(t, condition.Message, "Pod "+namespace+"/"+pod.Name)
+			pod.Labels["app"] = "api"
+			require.NoError(t, c.Update(ctx, pod))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorDoesNotMatchTarget, metav1.ConditionFalse)
+			pod.Labels["app"] = "web"
+			require.NoError(t, c.Update(ctx, pod))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorOverlapsWorkload, metav1.ConditionFalse)
+			require.NoError(t, c.Delete(ctx, pod, client.GracePeriodSeconds(0)))
+			waitForScopeCondition(t, c, wnp.NamespacedName(), reasonSelectorDoesNotMatchTarget, metav1.ConditionFalse)
+			require.NoError(t, c.Get(ctx, wnp.NamespacedName(), policy))
+			require.Equal(t, originalVersion, policy.GetResourceVersion())
+			require.EventuallyWithT(t, func(collect *assert.CollectT) {
+				assert.InDelta(collect, baseline+7, testutil.ToFloat64(r.selectorOverlaps), 0)
+			}, 5*time.Second, 50*time.Millisecond)
+		})
+	}
+}
+
 func testRetainedPolicyWorkloadWatch(
 	t *testing.T,
 	c client.Client,
@@ -191,8 +358,7 @@ func waitForScopeCondition(
 			assert.Equal(collect, status, condition.Status)
 			assert.Equal(collect, wnp.Generation, condition.ObservedGeneration)
 		}
-		var np networkingv1.NetworkPolicy
-		assert.NoError(collect, c.Get(t.Context(), key, &np))
+		assert.NoError(collect, c.Get(t.Context(), key, renderedPolicyObject(wnp.Spec.Backend)))
 	}, 10*time.Second, 50*time.Millisecond)
 	return condition
 }
