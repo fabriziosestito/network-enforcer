@@ -1,7 +1,6 @@
 package e2e_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -176,21 +175,17 @@ func controllerPods(ctx context.Context) ([]corev1.Pod, error) {
 }
 
 func curlControllerMetrics(ctx context.Context, podIP string) (string, error) {
-	var stdout, stderr bytes.Buffer
-	execCtx, cancel := context.WithTimeout(ctx, defaultPodExecTimeout)
-	defer cancel()
 	command := []string{"sh", "-c", fmt.Sprintf(
 		`curl -fsS -k --connect-timeout 5 --max-time 10 `+
 			`-H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" `+
 			`https://%s:%d/metrics`,
 		podIP, metricsPort,
 	)}
-	if err := getSecurityV1Alpha1Client(ctx).ExecInDeployment(
-		execCtx, getNamespace(ctx), simpleAppClientDeploymentName, command, &stdout, &stderr,
-	); err != nil {
-		return "", fmt.Errorf("failed to scrape controller metrics from %s: %w: %s", podIP, err, stderr.String())
+	stdout, stderr, err := execInDeploymentRaw(ctx, simpleAppClientDeploymentName, command)
+	if err != nil {
+		return "", fmt.Errorf("failed to scrape controller metrics from %s: %w: %s", podIP, err, stderr)
 	}
-	return stdout.String(), nil
+	return stdout, nil
 }
 
 func parseMetrics(body string) (map[string]*dto.MetricFamily, error) {

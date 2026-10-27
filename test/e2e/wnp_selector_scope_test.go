@@ -43,14 +43,14 @@ func assessOverlappingWorkloads(ctx context.Context, t *testing.T, _ *envconf.Co
 			correlationWorkloadLabel: overlapTargetDeployment,
 			correlationAppLabel:      overlapTargetApp,
 		},
-		[]string{"sleep", correlationSleepCommand})
+		[]string{"sleep", correlationSleepDuration})
 	createCorrelationDeployment(ctx, t, overlapCanaryDeployment,
 		map[string]string{correlationWorkloadLabel: overlapCanaryDeployment},
 		map[string]string{
 			correlationWorkloadLabel: overlapCanaryDeployment,
 			correlationAppLabel:      overlapTargetApp,
 		},
-		[]string{"sleep", correlationSleepCommand})
+		[]string{"sleep", correlationSleepDuration})
 
 	createCorrelationWNP(ctx, t, correlationWNPSpec{
 		name:        overlapPolicyName,

@@ -141,16 +141,6 @@ func getProtoCmd(proto corev1.Protocol, port int32) (string, []string) {
 	}
 }
 
-// execInSimpleClientDeploymentRaw executes a command in the client deployment's
-// first pod without asserting on the error, so callers can distinguish allowed
-// (no error, echoed payload) from blocked (rejected connection) traffic.
-func execInSimpleClientDeploymentRaw(
-	ctx context.Context,
-	command []string,
-) (string, string, error) {
-	return execInDeploymentRaw(ctx, simpleAppClientDeploymentName, command)
-}
-
 func execInDeploymentRaw(
 	ctx context.Context,
 	deployment string,
@@ -184,7 +174,7 @@ func assertPacketSentFromClient(
 	t.Helper()
 
 	payload, cmd := getProtoCmd(proto, port)
-	stdout, stderr, err := execInSimpleClientDeploymentRaw(ctx, cmd)
+	stdout, stderr, err := execInDeploymentRaw(ctx, simpleAppClientDeploymentName, cmd)
 	require.NoError(t, err, "failed executing command in deployment %q: %v", simpleAppClientDeploymentName, err)
 	require.Empty(t, stderr)
 	require.Contains(t, stdout, payload, "client output should contain echoed payload")
@@ -207,7 +197,7 @@ func assertPacketBlockedFromClient(
 	payload, cmd := getProtoCmd(proto, port)
 	require.Eventually(t, func() bool {
 		// we need to try multiple times because it may take some time for the policy to be enforced.
-		stdout, _, _ := execInSimpleClientDeploymentRaw(ctx, cmd)
+		stdout, _, _ := execInDeploymentRaw(ctx, simpleAppClientDeploymentName, cmd)
 		if strings.Contains(stdout, payload) {
 			t.Logf("traffic to port %d still echoing", port)
 			return false

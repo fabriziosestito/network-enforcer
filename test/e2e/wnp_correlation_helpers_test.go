@@ -34,7 +34,7 @@ const (
 	correlationTierLabel     = "tier"
 	correlationCanaryTier    = "canary"
 	correlationTCPPayload    = "correlation-e2e-payload"
-	correlationSleepCommand  = "10d"
+	correlationSleepDuration = "10d"
 
 	wnpReadyConditionType    = "Ready"
 	reasonSelectorScopeValid = "SelectorScopeValid"
@@ -307,7 +307,7 @@ func readyPodIPs(ctx context.Context, t *testing.T, selector map[string]string) 
 	ips := make([]string, 0, len(pods.Items))
 	for i := range pods.Items {
 		pod := pods.Items[i]
-		if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" {
+		if pod.Status.Phase != corev1.PodRunning || pod.Status.PodIP == "" || pod.DeletionTimestamp != nil {
 			continue
 		}
 		if matcher.Matches(labels.Set(pod.Labels)) {
@@ -319,20 +319,11 @@ func readyPodIPs(ctx context.Context, t *testing.T, selector map[string]string) 
 
 func sendClientTrafficToPort(ctx context.Context, port int32) {
 	_, cmd := getProtoCmd(corev1.ProtocolTCP, port)
-	_, _, _ = execInSimpleClientDeploymentRaw(ctx, cmd)
+	_, _, _ = execInDeploymentRaw(ctx, simpleAppClientDeploymentName, cmd)
 }
 
-func sendClientTrafficToPod(ctx context.Context, podIP string, port int32) {
-	_, _, _ = execInSimpleClientDeploymentRaw(ctx, []string{"sh", "-c", fmt.Sprintf(
-		"printf %s | nc -w 2 %s %d",
-		strconv.Quote(correlationTCPPayload),
-		podIP,
-		port,
-	)})
-}
-
-func sendServerEgressToPod(ctx context.Context, podIP string, port int32) {
-	_, _, _ = execInDeploymentRaw(ctx, simpleAppServerDeploymentName, []string{"sh", "-c", fmt.Sprintf(
+func sendTrafficFromDeploymentToPod(ctx context.Context, deployment, podIP string, port int32) {
+	_, _, _ = execInDeploymentRaw(ctx, deployment, []string{"sh", "-c", fmt.Sprintf(
 		"printf %s | nc -w 2 %s %d",
 		strconv.Quote(correlationTCPPayload),
 		podIP,
@@ -416,7 +407,9 @@ func assertEgressViolationAttributed(ctx context.Context, t *testing.T, wnpName 
 	namespace := getNamespace(ctx)
 	sendTrafficUntilViolation(
 		ctx, t,
-		func() { sendServerEgressToPod(ctx, clientIPs[0], simpleAppTCPServicePort) },
+		func() {
+			sendTrafficFromDeploymentToPod(ctx, simpleAppServerDeploymentName, clientIPs[0], simpleAppTCPServicePort)
+		},
 		wnpName,
 		func(violation securityv1alpha1.ViolationRecord) bool {
 			return isEgressServerToClientViolation(violation) &&

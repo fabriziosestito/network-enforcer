@@ -103,7 +103,10 @@ func assessStagedAttribution(ctx context.Context, t *testing.T, _ *envconf.Confi
 	require.Len(t, canaryIPs, 1, "expected exactly one canary pod")
 	sendTrafficUntilViolation(
 		ctx, t,
-		func() { sendClientTrafficToPod(ctx, canaryIPs[0], simpleAppViolatingServicePort) },
+		func() {
+			sendTrafficFromDeploymentToPod(
+				ctx, simpleAppClientDeploymentName, canaryIPs[0], simpleAppViolatingServicePort)
+		},
 		stagedCanaryPolicyName,
 		func(violation securityv1alpha1.ViolationRecord) bool {
 			return violation.Action == securityv1alpha1.WorkloadNetworkPolicyModeProtect &&
