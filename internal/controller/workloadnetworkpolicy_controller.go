@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	istiosecurityv1 "istio.io/client-go/pkg/apis/security/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
@@ -50,7 +50,8 @@ type WorkloadNetworkPolicyReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=networkenforcer.kubewarden.io,resources=workloadnetworkpolicies,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets;replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=security.istio.io,resources=authorizationpolicies,verbs=get;list;watch;create;update;patch;delete
 
@@ -139,7 +140,8 @@ func (r *WorkloadNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 	}
 
 	workloadHandler := handler.EnqueueRequestsFromMapFunc(r.policiesForWorkload)
-	workloadChanges := builder.WithPredicates(predicate.GenerationChangedPredicate{})
+	workloadChanges := builder.WithPredicates(selectorScopeWorkloadChanges())
+	metadataChanges := builder.WithPredicates(selectorScopeMetadataChanges())
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.WorkloadNetworkPolicy{}).
 		Watches(&securityv1alpha1.WorkloadNetworkPolicy{},
@@ -147,7 +149,9 @@ func (r *WorkloadNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 		Owns(&networkingv1.NetworkPolicy{}).
 		Watches(&appsv1.Deployment{}, workloadHandler, workloadChanges).
 		Watches(&appsv1.StatefulSet{}, workloadHandler, workloadChanges).
-		Watches(&appsv1.DaemonSet{}, workloadHandler, workloadChanges)
+		Watches(&appsv1.DaemonSet{}, workloadHandler, workloadChanges).
+		Watches(&appsv1.ReplicaSet{}, workloadHandler, metadataChanges).
+		Watches(&corev1.Pod{}, workloadHandler, metadataChanges)
 
 	// we need to disable the watch on the resource if Istio is not installed in the cluster
 	_, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{
