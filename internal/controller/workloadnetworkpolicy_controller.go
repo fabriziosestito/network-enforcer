@@ -21,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	securityv1alpha1 "github.com/kubewarden/network-enforcer/api/v1alpha1"
 )
@@ -141,7 +140,7 @@ func (r *WorkloadNetworkPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 	}
 
 	workloadHandler := handler.EnqueueRequestsFromMapFunc(r.policiesForWorkload)
-	workloadChanges := builder.WithPredicates(predicate.GenerationChangedPredicate{})
+	workloadChanges := builder.WithPredicates(selectorScopeWorkloadChanges())
 	metadataChanges := builder.WithPredicates(selectorScopeMetadataChanges())
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&securityv1alpha1.WorkloadNetworkPolicy{}).

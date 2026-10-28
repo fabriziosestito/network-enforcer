@@ -93,10 +93,22 @@ func podOwnerMatchesTarget(
 	return true
 }
 
+// Informers may deliver a same-name deletion and recreation as one update.
+// Ownership checks depend on UID, even when generation is unchanged.
+func selectorScopeWorkloadChanges() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetUID() != e.ObjectNew.GetUID() ||
+				e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+		},
+	}
+}
+
 func selectorScopeMetadataChanges() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			return !maps.Equal(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()) ||
+			return e.ObjectOld.GetUID() != e.ObjectNew.GetUID() ||
+				!maps.Equal(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()) ||
 				!reflect.DeepEqual(e.ObjectOld.GetOwnerReferences(), e.ObjectNew.GetOwnerReferences())
 		},
 	}

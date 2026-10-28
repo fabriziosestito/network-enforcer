@@ -284,6 +284,30 @@ func TestRetainedPolicyPodScope(t *testing.T) {
 	}
 }
 
+func TestSelectorScopeWorkloadChanges(t *testing.T) {
+	t.Parallel()
+	predicate := selectorScopeWorkloadChanges()
+	original := &appsv1.Deployment{Name: "web", Namespace: "default", UID: "original", Generation: 1}
+	require.True(t, predicate.Create(event.CreateEvent{Object: original}))
+	require.True(t, predicate.Delete(event.DeleteEvent{Object: original}))
+	for _, tc := range []struct {
+		name   string
+		change func(*appsv1.Deployment)
+		want   bool
+	}{
+		{name: "uid", change: func(d *appsv1.Deployment) { d.UID = "recreated" }, want: true},
+		{name: "generation", change: func(d *appsv1.Deployment) { d.Generation++ }, want: true},
+		{name: "status", change: func(d *appsv1.Deployment) { d.Status.ReadyReplicas = 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			updated := original.DeepCopy()
+			tc.change(updated)
+			require.Equal(t, tc.want, predicate.Update(event.UpdateEvent{ObjectOld: original, ObjectNew: updated}))
+		})
+	}
+}
+
 func TestSelectorScopeMetadataChanges(t *testing.T) {
 	t.Parallel()
 	predicate := selectorScopeMetadataChanges()
@@ -299,6 +323,7 @@ func TestSelectorScopeMetadataChanges(t *testing.T) {
 		{name: "owner", change: func(p *corev1.Pod) {
 			p.OwnerReferences = []metav1.OwnerReference{scopeOwner("Job", "batch", "job")}
 		}, want: true},
+		{name: "uid", change: func(p *corev1.Pod) { p.UID = "recreated" }, want: true},
 		{name: "status", change: func(p *corev1.Pod) { p.Status.Phase = corev1.PodRunning }},
 		{name: "annotations", change: func(p *corev1.Pod) { p.Annotations = map[string]string{"note": "ignored"} }},
 	} {
