@@ -789,16 +789,20 @@ tests:
     set:
       controller:
         imageRegistry: ""
+        image:
+          tag: 1.0.0
       istioFluentBit:
         imageRegistry: ""
+        image:
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "kubewarden/network-enforcer/controller:v0.4.0"
+          value: "kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "fluent/fluent-bit:5.1.5"
+          value: "fluent/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"
 
   - it: "should keep spec.selector.matchLabels with hostile labels and podLabels"

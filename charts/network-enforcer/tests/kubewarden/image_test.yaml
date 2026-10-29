@@ -11,16 +11,17 @@ workloads: &workloads
   skipEmptyTemplates: true
   matchMany: true
 tests:
+  # The tag pattern is loose, because automation updates the default tags.
   - it: "should render the default image for each workload"
     documentSelector: *workloads
     asserts:
-      - equal:
+      - matchRegex:
           path: "spec.template.spec.containers[0].image"
-          value: "ghcr.io/kubewarden/network-enforcer/controller:v0.4.0"
+          pattern: "^ghcr\\.io/kubewarden/network-enforcer/controller:[^:/]+$"
         template: "templates/controller/deployment.yaml"
-      - equal:
+      - matchRegex:
           path: "spec.template.spec.containers[0].image"
-          value: "docker.io/fluent/fluent-bit:5.1.5"
+          pattern: "^docker\\.io/fluent/fluent-bit:[^:/]+$"
         template: "templates/istio-fluent-bit/daemonset.yaml"
 
   - it: "should change only the tag with <name>.image.tag"
@@ -45,17 +46,21 @@ tests:
   - it: "should change only the repository with <name>.image.repository"
     documentSelector: *workloads
     set:
+      controller:
+        image:
+          tag: 1.0.0
       istioFluentBit:
         image:
           repository: example/fluent-bit
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "docker.io/example/fluent-bit:5.1.5"
+          value: "docker.io/example/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "ghcr.io/kubewarden/network-enforcer/controller:v0.4.0"
+          value: "ghcr.io/kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
 
   # network-enforcer cases: registry rules
@@ -66,16 +71,20 @@ tests:
         imageRegistry: global.example.com
       controller:
         imageRegistry: controller.example.com
+        image:
+          tag: 1.0.0
       istioFluentBit:
         imageRegistry: fluent.example.com
+        image:
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "global.example.com/kubewarden/network-enforcer/controller:v0.4.0"
+          value: "global.example.com/kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "global.example.com/fluent/fluent-bit:5.1.5"
+          value: "global.example.com/fluent/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"
 
   - it: "should use the workload imageRegistry when global.imageRegistry is empty"
@@ -83,16 +92,20 @@ tests:
     set:
       controller:
         imageRegistry: controller.example.com
+        image:
+          tag: 1.0.0
       istioFluentBit:
         imageRegistry: fluent.example.com
+        image:
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "controller.example.com/kubewarden/network-enforcer/controller:v0.4.0"
+          value: "controller.example.com/kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "fluent.example.com/fluent/fluent-bit:5.1.5"
+          value: "fluent.example.com/fluent/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"
 
   - it: "should ignore common.imageRegistry"
@@ -100,14 +113,20 @@ tests:
     set:
       common:
         imageRegistry: common.example.com
+      controller:
+        image:
+          tag: 1.0.0
+      istioFluentBit:
+        image:
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "ghcr.io/kubewarden/network-enforcer/controller:v0.4.0"
+          value: "ghcr.io/kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "docker.io/fluent/fluent-bit:5.1.5"
+          value: "docker.io/fluent/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"
 
   - it: "should render no registry prefix when every registry is empty"
@@ -119,14 +138,18 @@ tests:
         imageRegistry: common.example.com
       controller:
         imageRegistry: ""
+        image:
+          tag: 1.0.0
       istioFluentBit:
         imageRegistry: ""
+        image:
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "kubewarden/network-enforcer/controller:v0.4.0"
+          value: "kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "fluent/fluent-bit:5.1.5"
+          value: "fluent/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"

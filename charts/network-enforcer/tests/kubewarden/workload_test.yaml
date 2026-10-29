@@ -73,16 +73,21 @@ tests:
   - it: "should render istioFluentBit.imageRegistry on the fluent-bit DaemonSet only"
     documentSelector: *workloads
     set:
+      controller:
+        image:
+          tag: 1.0.0
       istioFluentBit:
         imageRegistry: mirror.example.com
+        image:
+          tag: 2.0.0
     asserts:
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "mirror.example.com/fluent/fluent-bit:5.1.5"
+          value: "mirror.example.com/fluent/fluent-bit:2.0.0"
         template: "templates/istio-fluent-bit/daemonset.yaml"
       - equal:
           path: "spec.template.spec.containers[0].image"
-          value: "ghcr.io/kubewarden/network-enforcer/controller:v0.4.0"
+          value: "ghcr.io/kubewarden/network-enforcer/controller:1.0.0"
         template: "templates/controller/deployment.yaml"
 
   - it: "should render istioFluentBit.imagePullSecrets on the fluent-bit DaemonSet only"
